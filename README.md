@@ -87,6 +87,30 @@ users may always do what anonymous visitors may. A symlink never grants
 more than the rules of where it leads: visitors need the rights for both
 the path they use and the path the link points to.
 
+A path starting with `!` denies, as in a `.gitignore`: it keeps its subject
+out of a path that broader rules open (on the **Rules** tab, choose "may
+not"). The rule for the longest path decides, whatever order the rules were
+added in; for the same path, a user's own rules come before their roles'
+rules, a role's before those it inherits, and a denial before the rest:
+
+```sh
+# Users may not open /hr/, but admins (and so superadmins) may, and users
+# may read the handbook in it:
+goftp policy add user '!/hr/*' '*'
+goftp policy add admin '/hr/*' '*'
+goftp policy add user '/hr/handbook/*' read
+
+# bob may open /bob/ only, which he finds in the top folder:
+goftp policy add user:bob '!/*' '*'
+goftp policy add user:bob '/bob/*' '*'
+goftp policy add user:bob '/' read
+```
+
+A denial for a role applies to the roles above it too. Rules for longer
+paths still apply under a denial, also those of a user's roles: with both
+examples, bob may read the handbook. A denial cannot take away what the
+rules for `anonymous` allow, since anyone may sign out.
+
 ## Running without Docker
 
 ```sh

@@ -209,10 +209,10 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 		return c.Redirect().Status(fiber.StatusMovedPermanently).To(escapePath(urlPath + "/"))
 	}
 	if c.Request().URI().QueryArgs().Has("zip") {
-		return s.serveZip(c, urlPath, realPath, zipName(urlPath), s.rulesOf(userOf(c)))
+		return s.serveZip(c, urlPath, realPath, zipName(urlPath), s.visitorRules(c))
 	}
 
-	items, err := s.folderItems(dir, urlPath, realPath, s.rulesOf(userOf(c)))
+	items, err := s.folderItems(dir, urlPath, realPath, s.visitorRules(c))
 	if err != nil {
 		return err
 	}

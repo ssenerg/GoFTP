@@ -2,15 +2,14 @@ package auth_test
 
 import (
 	"testing"
+	"time"
 
 	"goftp/internal/auth"
+	"goftp/internal/auth/authtest"
 )
 
 func TestDefaultPolicy(t *testing.T) {
-	e, err := auth.NewEnforcer(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc, _ := authtest.NewService(time.Hour)
 	for _, tc := range []struct {
 		role string
 		acts map[string]bool
@@ -21,39 +20,39 @@ func TestDefaultPolicy(t *testing.T) {
 		{"superadmin", map[string]bool{auth.ActRead: true, auth.ActWrite: true, auth.ActOverwrite: true, auth.ActDelete: true, "anything": true}},
 		{auth.Anonymous, map[string]bool{auth.ActRead: false}},
 	} {
-		if _, err := e.AddRoleForUser(auth.Subject("u-"+tc.role), tc.role); err != nil {
+		u := &auth.User{Username: "u-" + tc.role}
+		if tc.role == auth.Anonymous {
+			u = nil
+		} else if _, err := svc.Enforcer().AddRoleForUser(auth.Subject(u.Username), tc.role); err != nil {
 			t.Fatal(err)
 		}
 		for act, want := range tc.acts {
 			for _, obj := range []string{"/", "/a.txt", "/deep/dir/"} {
-				if got, err := e.Enforce(auth.Subject("u-"+tc.role), obj, act); got != want || err != nil {
+				if got, err := svc.Allowed(u, obj, act); got != want || err != nil {
 					t.Errorf("%s %s %s = %v, %v", tc.role, act, obj, got, err)
 				}
 			}
 		}
 	}
 	// A user named like a role does not hold it.
-	if ok, _ := e.Enforce(auth.Subject("admin"), "/", auth.ActRead); ok {
+	if ok, _ := svc.Allowed(&auth.User{Username: "admin"}, "/", auth.ActRead); ok {
 		t.Error("user admin holds the admin role")
 	}
 }
 
 func TestPathPatterns(t *testing.T) {
-	e, err := auth.NewEnforcer(nil)
-	if err != nil {
-		t.Fatal(err)
+	svc, _ := authtest.NewService(time.Hour)
+	for _, obj := range []string{"/docs/*", "/list/"} {
+		if _, err := svc.AddPolicy("user:bob", obj, auth.ActRead); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := e.AddPolicy("user:bob", "/docs/*", auth.ActRead); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := e.AddPolicy("user:bob", "/list/", auth.ActRead); err != nil {
-		t.Fatal(err)
-	}
+	bob := &auth.User{Username: "bob"}
 	for obj, want := range map[string]bool{
 		"/docs/": true, "/docs/a.txt": true, "/docs/sub/b": true, "/docs": false, "/docsx": false, "/": false,
 		"/list/": true, "/list/a.txt": false,
 	} {
-		if got, _ := e.Enforce("user:bob", obj, auth.ActRead); got != want {
+		if got, _ := svc.Allowed(bob, obj, auth.ActRead); got != want {
 			t.Errorf("%s: %v, want %v", obj, got, want)
 		}
 	}

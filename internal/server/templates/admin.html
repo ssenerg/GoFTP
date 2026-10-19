@@ -87,6 +87,7 @@
   <section class="card admin-form">
     <h2>Add a rule</h2>
     <p class="muted">A rule lets someone do something on a path: <code>/docs/*</code> covers <code>/docs/</code> and everything below it, <code>/docs/</code> alone just that listing. Roles also have the rights of the roles after them: {{range $i, $r := .Roles}}{{if $i}} › {{end}}{{$r}}{{end}}. Signed-in users may always do what everyone may.</p>
+    <p class="muted">A rule that someone <em>may not</em> keeps them out of a path that broader rules open. The rule for the longest path decides; for the same path, a user's own rules come before their roles', and “may not” before “may”.</p>
     <form method="post" action="/.admin/rules" class="inline-form">
       <input type="hidden" name="action" value="add">
       <label class="field"><span>Who</span>
@@ -97,7 +98,10 @@
       <label class="field"><span>Path</span>
         <input name="path" required placeholder="/docs/*" autocomplete="off" spellcheck="false">
       </label>
-      <label class="field"><span>May</span>
+      <label class="field"><span>Rule</span>
+        <select name="effect"><option value="allow">may</option><option value="deny">may not</option></select>
+      </label>
+      <label class="field"><span>Action</span>
         <select name="act">{{range .Actions}}<option value="{{.}}">{{actionName .}}</option>{{end}}</select>
       </label>
       <button type="submit" class="btn primary">Add rule</button>
@@ -106,19 +110,19 @@
 
   <div class="card">
     <table class="files list-table">
-      <thead><tr><th>Who</th><th>Path</th><th>May</th><th class="act"><span class="vh">Remove</span></th></tr></thead>
+      <thead><tr><th>Who</th><th>Path</th><th>Rule</th><th class="act"><span class="vh">Remove</span></th></tr></thead>
       <tbody>
         {{range .Rules}}
         <tr>
           <td class="name">{{.Who}}</td>
           <td><code>{{.Path}}</code></td>
-          <td>{{actionName .Action}}</td>
+          <td>{{if .Deny}}<span class="deny">may not</span>{{else}}may{{end}} {{actionName .Action}}</td>
           <td class="act">
             <details class="confirm">
               <summary class="icon-btn" aria-label="Remove the rule" title="Remove"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg></summary>
               <form method="post" action="/.admin/rules" class="popover">
-                <input type="hidden" name="action" value="remove"><input type="hidden" name="subject" value="{{.Subject}}"><input type="hidden" name="path" value="{{.Path}}"><input type="hidden" name="act" value="{{.Action}}">
-                <p>Remove this rule? {{.Who}} may then no longer {{actionName .Action}} <code>{{.Path}}</code>, unless another rule allows it.</p>
+                <input type="hidden" name="action" value="remove"><input type="hidden" name="subject" value="{{.Subject}}"><input type="hidden" name="path" value="{{.Object}}"><input type="hidden" name="act" value="{{.Action}}">
+                <p>Remove this rule? {{if .Deny}}{{.Who}} may then {{actionName .Action}} <code>{{.Path}}</code> if another rule allows it.{{else}}{{.Who}} may then no longer {{actionName .Action}} <code>{{.Path}}</code>, unless another rule allows it.{{end}}</p>
                 <div class="popover-actions"><button type="submit" class="btn danger small">Remove</button></div>
               </form>
             </details>

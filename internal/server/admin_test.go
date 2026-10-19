@@ -170,4 +170,33 @@ func TestAdminRules(t *testing.T) {
 	if resp, _ := post("action=remove&" + rule); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("removing a missing rule: %d", resp.StatusCode)
 	}
+
+	// Rules that deny: chosen, or written as in a .gitignore.
+	f.write(t, "pub/secret/s.txt", "s")
+	f.write(t, "pub/old/o.txt", "o")
+	for _, form := range []string{"subject=user&path=/pub/secret/*&act=read&effect=deny", "subject=user&path=!/pub/old/*&act=read&effect=allow"} {
+		if resp, _ := post("action=add&" + form); resp.StatusCode != http.StatusSeeOther {
+			t.Errorf("%s: %d", form, resp.StatusCode)
+		}
+	}
+	for p, want := range map[string]int{"/pub/a.txt": 200, "/pub/secret/s.txt": 403, "/pub/old/o.txt": 403} {
+		if resp, _ := f.as("user").do(t, "GET", p); resp.StatusCode != want {
+			t.Errorf("user GET %s: %d, want %d", p, resp.StatusCode, want)
+		}
+	}
+	_, body = f.as("superadmin").do(t, "GET", rulesPath)
+	for _, want := range []string{`<span class="deny">may not</span> read`, "<code>/pub/secret/*</code>", `name="path" value="!/pub/secret/*"`, "may then read <code>/pub/old/*</code> if another rule allows it"} {
+		if !strings.Contains(html.UnescapeString(body), want) {
+			t.Errorf("rules page lacks %s", want)
+		}
+	}
+	if resp, _ := post("action=add&subject=user&path=/pub/x/*&act=read&effect=maybe"); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("unknown effect: %d", resp.StatusCode)
+	}
+	if resp, _ := post("action=remove&subject=user&path=!/pub/secret/*&act=read"); resp.StatusCode != http.StatusSeeOther {
+		t.Errorf("removing a denial: %d", resp.StatusCode)
+	}
+	if resp, _ := f.as("user").do(t, "GET", "/pub/secret/s.txt"); resp.StatusCode != http.StatusOK {
+		t.Errorf("removed denial still in force: %d", resp.StatusCode)
+	}
 }

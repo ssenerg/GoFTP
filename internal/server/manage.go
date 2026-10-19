@@ -328,15 +328,38 @@ func entryName(name string) bool {
 // a symlink grants nothing its target's rules do not, so realPath (where
 // symlinks lead, see resolve) has to allow it as well.
 func (s *Server) mayAt(c fiber.Ctx, act, urlPath, realPath string, dir bool) (bool, error) {
-	return mayBoth(s.rulesOf(userOf(c)), act, urlPath, realPath, dir)
+	return mayBoth(s.visitorRules(c), act, urlPath, realPath, dir)
 }
 
 // allowFunc reports whether act is allowed on obj.
 type allowFunc func(obj, act string) (bool, error)
 
-// rulesOf applies the rules for u, nil for anonymous visitors.
+// visitorRules applies the rules for the visitor of c, gathered once per
+// request: listings check every entry.
+func (s *Server) visitorRules(c fiber.Ctx) allowFunc {
+	type cached struct {
+		user  *auth.User
+		allow allowFunc
+	}
+	u := userOf(c)
+	if r, ok := c.Locals(rulesKey).(cached); ok && r.user == u {
+		return r.allow
+	}
+	allow := s.rulesOf(u)
+	c.Locals(rulesKey, cached{u, allow})
+	return allow
+}
+
+// rulesOf applies the rules for u, nil for anonymous visitors, as they are
+// now: gathered once for the many checks to come.
 func (s *Server) rulesOf(u *auth.User) allowFunc {
-	return func(obj, act string) (bool, error) { return s.auth.Allowed(u, obj, act) }
+	rules, err := s.auth.RulesFor(u)
+	return func(obj, act string) (bool, error) {
+		if err != nil {
+			return false, err
+		}
+		return rules.Allow(obj, act), nil
+	}
 }
 
 // mayBoth is mayAt for the rules of allow.

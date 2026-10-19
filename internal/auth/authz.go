@@ -26,7 +26,8 @@ const Anonymous = "anonymous"
 func Subject(username string) string { return "user:" + username }
 
 // Objects are URL paths; directories end in "/". "/docs/*" covers /docs/
-// and everything below it.
+// and everything below it, and a leading "!" denies. The model stores the
+// rules and roles; Rules decides, as its matcher cannot weigh denials.
 const modelText = `
 [request_definition]
 r = sub, obj, act

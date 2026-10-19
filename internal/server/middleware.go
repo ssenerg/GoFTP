@@ -20,6 +20,7 @@ const (
 	bodyDoneKey
 	sessionKey
 	shareKey
+	rulesKey
 )
 
 type logState struct {

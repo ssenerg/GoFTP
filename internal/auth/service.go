@@ -203,14 +203,13 @@ func (s *Service) ChangePassword(ctx context.Context, u *User, current, next str
 }
 
 // Allowed reports whether u (nil for anonymous) may perform act on obj.
-// Signing in never takes away what anonymous visitors may do.
+// For many checks, RulesFor gathers the rules once.
 func (s *Service) Allowed(u *User, obj, act string) (bool, error) {
-	if u != nil {
-		if ok, err := s.enforcer.Enforce(Subject(u.Username), obj, act); ok || err != nil {
-			return ok, err
-		}
+	r, err := s.RulesFor(u)
+	if err != nil {
+		return false, err
 	}
-	return s.enforcer.Enforce(Anonymous, obj, act)
+	return r.Allow(obj, act), nil
 }
 
 // IsSuperadmin reports whether username holds the role that administers
