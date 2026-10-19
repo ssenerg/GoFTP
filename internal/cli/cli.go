@@ -290,8 +290,11 @@ func policyCmd() *cobra.Command {
 			"Actions:  " + auth.ActRead + " (list, download), " + auth.ActWrite + " (upload new files, create folders), " +
 			auth.ActOverwrite + " (replace files), " + auth.ActDelete + " (delete, rename),\n" +
 			"          " + auth.ActShare + " (create links for people without an account) or *.\n" +
-			"Paths:    \"/docs/*\" covers /docs/ and everything below it; \"/docs/\" is just the listing.\n\n" +
-			"Roles inherit the rules of the roles below them: " + strings.Join(auth.Roles, " > ") + ".",
+			"Paths:    \"/docs/*\" covers /docs/ and everything below it; \"/docs/\" is just the listing.\n" +
+			"          A path starting with \"!\" denies, as in a .gitignore: \"!/docs/private/*\".\n\n" +
+			"Roles inherit the rules of the roles below them: " + strings.Join(auth.Roles, " > ") + ".\n" +
+			"The rule for the longest path decides; for the same path, a user's own rules come\n" +
+			"before their roles', a role's before those it inherits, and denials before the rest.",
 		Args: cobra.NoArgs,
 		RunE: help,
 	}
@@ -321,10 +324,12 @@ func policyCmd() *cobra.Command {
 	}
 
 	add := &cobra.Command{
-		Use:     "add SUBJECT PATH ACTION",
-		Short:   "Allow SUBJECT to perform ACTION on PATH",
-		Example: "  goftp policy add anonymous '/public/*' read\n  goftp policy add user:alice '/alice/*' '*'",
-		Args:    cobra.ExactArgs(3),
+		Use:   "add SUBJECT PATH ACTION",
+		Short: "Allow SUBJECT to perform ACTION on PATH, or deny it with !PATH",
+		Example: "  goftp policy add anonymous '/public/*' read\n  goftp policy add user:alice '/alice/*' '*'\n" +
+			"  goftp policy add user '!/hr/*' '*'           # users may not open /hr/\n" +
+			"  goftp policy add admin '/hr/*' '*'           # but admins may",
+		Args: cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withService(cmd, func(svc *auth.Service) error {
 				added, err := svc.AddPolicy(args[0], args[1], args[2])

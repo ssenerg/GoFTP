@@ -38,7 +38,10 @@ type adminUser struct {
 }
 
 type adminRule struct {
-	Subject, Who, Path, Action string
+	Subject, Who, Action string
+	Object               string // as stored: "!" first for denials
+	Path                 string // as shown
+	Deny                 bool
 }
 
 type subject struct {
@@ -157,6 +160,16 @@ func (s *Server) rulesAction(c fiber.Ctx) error {
 	fail := func(status int, msg string) error { return s.renderAdmin(c, status, "rules", "", msg, nil) }
 	switch form["action"] {
 	case "add":
+		// A denial is chosen, or written as in a .gitignore.
+		switch form["effect"] {
+		case "deny":
+			if !strings.HasPrefix(obj, auth.DenyPrefix) {
+				obj = auth.DenyPrefix + obj
+			}
+		case "allow", "":
+		default:
+			return fiber.ErrBadRequest
+		}
 		ok, err := s.auth.AddPolicy(sub, obj, act)
 		switch {
 		case err != nil:
@@ -238,10 +251,11 @@ func (s *Server) renderAdmin(c fiber.Ctx, status int, tab, notice, failure strin
 		if len(p) < 3 {
 			continue
 		}
-		data.Rules = append(data.Rules, adminRule{Subject: p[0], Who: who(p[0]), Path: p[1], Action: p[2]})
+		path, deny := strings.CutPrefix(p[1], auth.DenyPrefix)
+		data.Rules = append(data.Rules, adminRule{Subject: p[0], Who: who(p[0]), Object: p[1], Path: path, Deny: deny, Action: p[2]})
 	}
 	slices.SortFunc(data.Rules, func(a, b adminRule) int {
-		return strings.Compare(a.Subject+"\x00"+a.Path+"\x00"+a.Action, b.Subject+"\x00"+b.Path+"\x00"+b.Action)
+		return strings.Compare(a.Subject+"\x00"+a.Path+"\x00"+a.Object+"\x00"+a.Action, b.Subject+"\x00"+b.Path+"\x00"+b.Object+"\x00"+b.Action)
 	})
 	return s.render(c, status, "admin", data)
 }

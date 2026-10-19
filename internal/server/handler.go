@@ -39,7 +39,7 @@ func (s *Server) handle(c fiber.Ctx) error {
 	if !ok {
 		return s.deny(c)
 	}
-	allow := s.rulesOf(userOf(c))
+	allow := s.visitorRules(c)
 	f, info, realPath, err := s.lookup(urlPath, allow)
 	if err != nil {
 		return err

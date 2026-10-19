@@ -184,14 +184,14 @@ func (s *Server) share(c fiber.Ctx) (*auth.Share, *shareView, string, bool, erro
 // shareRules let a link's visitors read what its creator may read and
 // share, and nothing else.
 func (s *Server) shareRules(sh *auth.Share) allowFunc {
-	creator := &auth.User{ID: sh.CreatedBy, Username: sh.Creator}
+	allow := s.rulesOf(&auth.User{ID: sh.CreatedBy, Username: sh.Creator})
 	return func(obj, act string) (bool, error) {
 		if act != auth.ActRead {
 			return false, nil
 		}
-		ok, err := s.auth.Allowed(creator, obj, auth.ActRead)
+		ok, err := allow(obj, auth.ActRead)
 		if err == nil && ok {
-			ok, err = s.auth.Allowed(creator, obj, auth.ActShare)
+			ok, err = allow(obj, auth.ActShare)
 		}
 		return ok, err
 	}

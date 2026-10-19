@@ -619,6 +619,63 @@ func TestPolicies(t *testing.T) {
 	}
 }
 
+// Denials apply wherever rights do: listings, downloads, zips, uploads and
+// links.
+func TestDenials(t *testing.T) {
+	ta := newTestAuth(t)
+	f := newFixtureWith(t, ta)
+	f.write(t, "docs/a.txt", "alpha")
+	f.write(t, "docs/hr/pay.txt", "pay")
+	f.write(t, "docs/hr/handbook/rules.txt", "rules")
+	for _, rule := range [][3]string{
+		{"user", "!/docs/hr/*", "*"},
+		{"user", "/docs/hr/handbook/*", auth.ActRead},
+		{"admin", "/docs/hr/*", auth.ActRead},
+	} {
+		if _, err := ta.svc.AddPolicy(rule[0], rule[1], rule[2]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	user := f.as("user")
+	_, body := user.do(t, "GET", "/docs/", "Accept", "text/html")
+	if !strings.Contains(body, `data-name="a.txt"`) || strings.Contains(body, `data-name="hr"`) {
+		t.Error("the listing shows what is denied")
+	}
+	for p, want := range map[string]int{"/docs/a.txt": 200, "/docs/hr/": 403, "/docs/hr/pay.txt": 403, "/docs/hr/handbook/rules.txt": 200, "/docs/hr/handbook/": 200} {
+		if resp, _ := user.do(t, "GET", p); resp.StatusCode != want {
+			t.Errorf("user GET %s: %d, want %d", p, resp.StatusCode, want)
+		}
+	}
+	if _, body := user.do(t, "GET", "/docs/?zip"); !strings.Contains(body, "a.txt") || strings.Contains(body, "pay.txt") {
+		t.Error("the zip holds what is denied")
+	}
+
+	// Denied for every role above, unless a rule as long allows it.
+	for role, want := range map[string]int{"operator": 403, "admin": 200, "superadmin": 200} {
+		if resp, _ := f.as(role).do(t, "GET", "/docs/hr/pay.txt"); resp.StatusCode != want {
+			t.Errorf("%s GET: %d, want %d", role, resp.StatusCode, want)
+		}
+	}
+	for p, want := range map[string]int{"/docs/new.txt": 201, "/docs/hr/new.txt": 403} {
+		if resp, _ := f.as("operator").send(t, "PUT", p, strings.NewReader("n")); resp.StatusCode != want {
+			t.Errorf("operator PUT %s: %d, want %d", p, resp.StatusCode, want)
+		}
+	}
+	// The admin may read /docs/hr/ but not share it: links stay within
+	// what their creator may share.
+	if resp, _ := f.as("admin").send(t, "POST", sharesPath, strings.NewReader("action=create&expires=1h&path=/docs/hr/"), "Content-Type", formType); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("sharing a denied folder: %d", resp.StatusCode)
+	}
+	link := sharePrefix + createShare(t, f, "admin", "/docs", "1h", "")
+	if _, body := f.as("").do(t, "GET", link+"/", "Accept", "text/html"); !strings.Contains(body, `data-name="a.txt"`) || strings.Contains(body, `data-name="hr"`) {
+		t.Error("the link shows what is denied")
+	}
+	if resp, _ := f.as("").do(t, "GET", link+"/hr/pay.txt"); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("a denied file through the link: %d", resp.StatusCode)
+	}
+}
+
 func TestSafeNext(t *testing.T) {
 	for next, want := range map[string]string{
 		"/":                "/",

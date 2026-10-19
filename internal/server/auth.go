@@ -164,7 +164,7 @@ func (s *Server) deny(c fiber.Ctx) error {
 }
 
 func (s *Server) allowed(c fiber.Ctx, obj, act string) (bool, error) {
-	return s.auth.Allowed(userOf(c), obj, act)
+	return s.visitorRules(c)(obj, act)
 }
 
 // object is the policy object of a clean URL path; directories end in "/".

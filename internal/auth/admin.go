@@ -11,7 +11,7 @@ import (
 
 var (
 	ErrInvalidSubject = fmt.Errorf("subject must be a role (%s), %q or \"user:<name>\"", strings.Join(Roles, ", "), Anonymous)
-	ErrInvalidObject  = errors.New(`path must be a clean absolute URL path, optionally ending in "/*", e.g. "/docs/*"`)
+	ErrInvalidObject  = errors.New(`path must be a clean absolute URL path, optionally ending in "/*" and starting with "!" to deny, e.g. "/docs/*" or "!/docs/private/*"`)
 	ErrInvalidAction  = fmt.Errorf("action must be %s or *", strings.Join(Actions, ", "))
 )
 
@@ -142,7 +142,8 @@ func (s *Service) Policies() (perms, roles [][]string, err error) {
 	return perms, roles, err
 }
 
-// AddPolicy allows sub to perform act on the paths matching obj.
+// AddPolicy allows sub to perform act on the paths matching obj, or with
+// obj starting with DenyPrefix, denies it (see Rules).
 func (s *Service) AddPolicy(sub, obj, act string) (bool, error) {
 	if err := checkRule(sub, obj, act); err != nil {
 		return false, err
@@ -165,9 +166,9 @@ func checkRule(sub, obj, act string) error {
 	if act != "*" && !slices.Contains(Actions, act) {
 		return ErrInvalidAction
 	}
-	// keyMatch compares the text before "*" as a plain prefix, so "/pub*"
-	// would also cover "/public-archive/".
-	base, wildcard := strings.CutSuffix(obj, "*")
+	// "*" makes the text before it a plain prefix, so "/pub*" would also
+	// cover "/public-archive/".
+	base, wildcard := strings.CutSuffix(strings.TrimPrefix(obj, DenyPrefix), "*")
 	if !strings.HasPrefix(base, "/") || (wildcard && !strings.HasSuffix(base, "/")) || strings.ContainsAny(base, "*\\") ||
 		strings.ContainsFunc(obj, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
 		return ErrInvalidObject
