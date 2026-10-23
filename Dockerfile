@@ -1,9 +1,12 @@
-FROM golang:1.27.2-alpine AS build
+# Go cross-compiles: images for other platforms (--platform) build without
+# emulation.
+FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine AS build
+ARG TARGETOS TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/goftp . && \
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/goftp . && \
     mkdir /out/data && mkdir -p /out/dirs && mkdir -m 1777 /out/dirs/cache
 
 FROM gcr.io/distroless/static-debian12:nonroot

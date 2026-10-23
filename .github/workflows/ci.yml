@@ -7,13 +7,16 @@ on:
   # New advisories turn up without any change here.
   schedule:
     - cron: "17 5 * * 1"
+  # Run on main, it tests and deploys again.
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# Runs on main wait for each other instead of cutting off a deploy.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -80,3 +83,82 @@ jobs:
         run: POSTGRES_PASSWORD=ci docker compose config --quiet
       - name: Image
         run: docker build --pull --tag goftp:ci .
+
+  # Sends the image to the server over SSH, where deploy/deploy.sh starts
+  # it, for every push to main that passes. See "Deploying" in the README
+  # for the settings of the production environment.
+  deploy:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: [test, docker]
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ vars.DEPLOY_URL }}
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    env:
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/goftp' }}
+      DEPLOY_PLATFORM: ${{ vars.DEPLOY_PLATFORM || 'linux/amd64' }}
+    steps:
+      - name: Settings
+        id: settings
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          if [ -z "$HOST" ] || [ -z "$KEY" ] || [ -z "$KNOWN_HOSTS" ]; then
+            echo "::warning::Not deployed: the production environment needs the secrets DEPLOY_HOST, DEPLOY_SSH_KEY and DEPLOY_KNOWN_HOSTS (see Deploying in the README)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # It is quoted in remote commands.
+          if ! printf '%s' "$DEPLOY_PATH" | grep -Eqx '/[A-Za-z0-9._/-]+'; then
+            echo "::error::DEPLOY_PATH must be an absolute path of letters, digits and . _ - /"
+            exit 1
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+      - if: steps.settings.outputs.ready == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Image
+        if: steps.settings.outputs.ready == 'true'
+        run: |
+          docker build --pull --platform "$DEPLOY_PLATFORM" --tag goftp:latest \
+            --label org.opencontainers.image.title=goftp \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" .
+      - name: SSH
+        if: steps.settings.outputs.ready == 'true'
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          SSH_USER: ${{ vars.DEPLOY_USER || 'deploy' }}
+          SSH_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+        run: |
+          install -d -m 700 ~/.ssh
+          (umask 077 && printf '%s\n' "$KEY" > ~/.ssh/deploy_key)
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host server
+            HostName $HOST
+            Port $SSH_PORT
+            User $SSH_USER
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            BatchMode yes
+            ServerAliveInterval 15
+          EOF
+      - name: Deploy
+        if: steps.settings.outputs.ready == 'true'
+        run: |
+          tar -cf - docker-compose.yml -C deploy deploy.sh |
+            ssh server "mkdir -p '$DEPLOY_PATH' && tar -xf - -C '$DEPLOY_PATH'"
+          docker save goftp:latest | gzip | ssh server "sh '$DEPLOY_PATH/deploy.sh'"
+      - name: Forget the key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

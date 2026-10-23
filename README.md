@@ -316,6 +316,72 @@ passwords typed into the wrong field). `goftp user list` shows the users, and
 `goftp user passwd NAME` gives one a new temporary password (temporary
 passwords ignore case and surrounding spaces).
 
+## Deploying
+
+Every push to `main` that passes CI is deployed to a Linux server with
+Docker Compose: the `deploy` job builds the image, sends it over SSH and
+runs [`deploy/deploy.sh`](deploy/deploy.sh) there, which restarts goftp
+with it. If goftp does not keep running, the script puts the image that
+ran before back and the job fails, with goftp's last logs. The server pulls
+no goftp image from a registry; it needs the `postgres:18-alpine` image
+once, as before.
+
+Once, on the server, as root: a user to deploy as (in the `docker` group,
+which is as good as root on that server) and the directory goftp runs
+from, holding your `.env` (see [`.env.example`](.env.example)):
+
+```sh
+useradd --create-home --groups docker deploy
+install -d -o deploy -g deploy -m 750 /opt/goftp
+install -o deploy -g deploy -m 600 .env /opt/goftp/.env
+```
+
+On your computer, a key for GitHub to sign in with. Add `goftp-deploy.pub`
+to `~deploy/.ssh/authorized_keys` on the server, with `restrict ` in front
+of it (no shells, no forwarding), and check the server's key that
+`ssh-keyscan` prints against `ssh-keygen -lf
+/etc/ssh/ssh_host_ed25519_key.pub` on the server:
+
+```sh
+ssh-keygen -t ed25519 -N '' -C goftp-deploy -f goftp-deploy
+ssh-keyscan -t ed25519 SERVER > known_hosts   # with -p PORT for another port
+```
+
+On GitHub, under Settings → Environments, create the environment
+`production`, let only `main` deploy to it (Deployment branches → Selected
+branches), and give it these secrets:
+
+```sh
+gh secret set DEPLOY_HOST --env production --body SERVER
+gh secret set DEPLOY_SSH_KEY --env production < goftp-deploy
+gh secret set DEPLOY_KNOWN_HOSTS --env production < known_hosts
+rm goftp-deploy   # GitHub has it now
+```
+
+Its variables, all optional: `DEPLOY_USER` (`deploy`), `DEPLOY_PORT`
+(`22`), `DEPLOY_PATH` (`/opt/goftp`), `DEPLOY_PLATFORM` (`linux/amd64`;
+`linux/arm64` when `uname -m` says `aarch64`) and `DEPLOY_URL`, the
+address shown with each deploy. Until the secrets are set, the job skips
+deploying with a warning.
+
+Compose names volumes after the directory: from `/opt/goftp` they are
+`goftp_pgdata` and so on, as for a clone in a directory named `goftp`. If
+goftp ran from a directory with another name before, set
+`COMPOSE_PROJECT_NAME` to that name in `.env`, or the database starts out
+empty. Manage goftp from the new directory from then on, e.g. `cd
+/opt/goftp && docker compose exec goftp goftp user list`.
+
+To deploy again, run the CI workflow on `main` (Actions → CI → Run
+workflow). To go back to an earlier version, re-run the CI run of its
+commit, or on the server go back one deploy:
+
+```sh
+cd /opt/goftp && docker image tag goftp:previous goftp:latest && docker compose up -d --force-recreate goftp
+```
+
+Older versions skip database migrations they do not know, so going back
+works as long as migrations only add to the schema.
+
 ## Development
 
 ```sh
@@ -327,4 +393,4 @@ GOFTP_TEST_DATABASE_URL="postgres://postgres:secret@localhost/goftp_test" go tes
 [CI](.github/workflows/ci.yml) runs these with Postgres on every pull request,
 along with gofmt, `go vet`, builds for Windows, macOS and FreeBSD,
 [govulncheck](https://go.dev/doc/security/vuln/) (also weekly) and a build
-of the Docker image.
+of the Docker image, and deploys `main` (see [Deploying](#deploying)).
