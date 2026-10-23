@@ -1,6 +1,6 @@
 module goftp
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/casbin/casbin/v3 v3.11.0

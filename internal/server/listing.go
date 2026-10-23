@@ -54,8 +54,9 @@ type page struct {
 	Title     string
 	User      string
 	Role      string
-	Admin     bool // may administer users and rules
-	Shares    bool // may share links, or administers them
+	Admin     bool   // may administer users and rules
+	Shares    bool   // may share links, or administers them
+	Section   string // the top bar's tab for the page: "files", "shared" or ""
 	Here      string
 	MinLength int
 	// Shared is set on pages reached through a share link, which show
@@ -72,6 +73,12 @@ func (s *Server) page(c fiber.Ctx, title string) page {
 		p.Role = s.auth.Role(u.Username)
 		p.Admin = s.auth.IsSuperadmin(u.Username)
 		p.Shares = p.Admin || s.auth.MayShare(u.Username)
+	}
+	switch {
+	case strings.HasPrefix(c.Path(), sharesPath):
+		p.Section = "shared"
+	case !strings.HasPrefix(c.Path(), "/."):
+		p.Section = "files"
 	}
 	return p
 }

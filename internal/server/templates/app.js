@@ -91,6 +91,13 @@
     });
   }
 
+  // The toolbar's popovers open below their button, aligned to its right
+  // edge, or to its left edge when they would leave the window that way.
+  const place = pop => {
+    pop.classList.remove("start");
+    if (pop.getBoundingClientRect().left < 0) pop.classList.add("start");
+  };
+
   // New folder: a popover whose errors show in place.
   const box = $(".newfolder");
   if (box) {
@@ -98,7 +105,9 @@
     const name = $("input[name=folder]", form);
     const error = $(".popover-error", form);
     box.addEventListener("toggle", () => {
-      if (box.open) name.focus();
+      if (!box.open) return;
+      place(form);
+      name.focus();
     });
     box.addEventListener("keydown", e => {
       if (e.key === "Escape" && box.open) {
@@ -225,7 +234,9 @@
     const form = $("form", box);
     shareForm(form, form.dataset.name);
     box.addEventListener("toggle", () => {
-      if (box.open && form.elements.expires) form.elements.expires.focus();
+      if (!box.open) return;
+      place(form);
+      if (form.elements.expires) form.elements.expires.focus();
     });
     box.addEventListener("keydown", e => {
       if (e.key === "Escape" && box.open) {
