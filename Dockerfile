@@ -1,6 +1,6 @@
 # Go cross-compiles: images for other platforms (--platform) build without
 # emulation.
-FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS build
 ARG TARGETOS TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
