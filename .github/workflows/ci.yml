@@ -73,24 +73,62 @@ jobs:
       - name: Known vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
+  # Builds the image for amd64 and arm64. For pushes to main, and runs
+  # started by hand on main, it is published as ghcr.io/OWNER/REPO, tagged
+  # latest and sha-COMMIT; the deploy job deploys that image.
   docker:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+    env:
+      PUBLISH: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Compose file
         run: POSTGRES_PASSWORD=ci docker compose config --quiet
+      - name: Log in to ghcr.io
+        if: env.PUBLISH == 'true'
+        env:
+          TOKEN: ${{ github.token }}
+        run: printf '%s' "$TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
       - name: Image
-        run: docker build --pull --tag goftp:ci .
+        id: image
+        run: |
+          image=ghcr.io/${GITHUB_REPOSITORY,,}
+          source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY
+          description="Resumable file server with users, roles and share links"
+          # Docker's default builder cannot build several platforms at once.
+          docker buildx create --use --driver docker-container >/dev/null
+          docker buildx build --pull --platform linux/amd64,linux/arm64 \
+            --label org.opencontainers.image.title=goftp \
+            --label "org.opencontainers.image.description=$description" \
+            --label "org.opencontainers.image.source=$source" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --annotation "index:org.opencontainers.image.description=$description" \
+            --annotation "index:org.opencontainers.image.source=$source" \
+            --tag "$image:latest" --tag "$image:sha-${GITHUB_SHA::7}" \
+            --output "type=image,push=$PUBLISH" \
+            --metadata-file "$RUNNER_TEMP/image.json" .
+          echo "digest=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/image.json")" >> "$GITHUB_OUTPUT"
+      - name: Log out of ghcr.io
+        if: always() && env.PUBLISH == 'true'
+        run: docker logout ghcr.io
 
-  # Sends the image to the server over SSH, where deploy/deploy.sh starts
-  # it, for every push to main that passes. See "Deploying" in the README
-  # for the settings of the production environment.
+  # Sends the image the docker job published to the server over SSH, where
+  # deploy/deploy.sh starts it, for every push to main that passes. See
+  # "Deploying" in the README for the settings of the production environment.
   deploy:
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: [test, docker]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     environment:
       name: production
       url: ${{ vars.DEPLOY_URL }}
@@ -118,18 +156,38 @@ jobs:
             echo "::error::DEPLOY_PATH must be an absolute path of letters, digits and . _ - /"
             exit 1
           fi
+          case $DEPLOY_PLATFORM in
+            linux/amd64 | linux/arm64) ;;
+            *) echo "::error::DEPLOY_PLATFORM must be linux/amd64 or linux/arm64, the platforms images are published for"; exit 1 ;;
+          esac
           echo "ready=true" >> "$GITHUB_OUTPUT"
       - if: steps.settings.outputs.ready == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The published image for the server's platform, by digest: the server
+      # runs exactly what ghcr.io has, and pulls nothing itself.
       - name: Image
         if: steps.settings.outputs.ready == 'true'
+        env:
+          INDEX: ${{ needs.docker.outputs.digest }}
+          TOKEN: ${{ github.token }}
         run: |
-          docker build --pull --platform "$DEPLOY_PLATFORM" --tag goftp:latest \
-            --label org.opencontainers.image.title=goftp \
-            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
-            --label "org.opencontainers.image.revision=$GITHUB_SHA" .
+          image=ghcr.io/${GITHUB_REPOSITORY,,}
+          case $INDEX in
+            sha256:*) ;;
+            *) echo "::error::The docker job published no image (digest: '$INDEX')"; exit 1 ;;
+          esac
+          printf '%s' "$TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          digest=$(docker buildx imagetools inspect --raw "$image@$INDEX" | jq -r --arg arch "${DEPLOY_PLATFORM#linux/}" \
+            '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest')
+          if [ -z "$digest" ]; then
+            echo "::error::$image@$INDEX has no image for $DEPLOY_PLATFORM"
+            exit 1
+          fi
+          docker pull "$image@$digest"
+          docker tag "$image@$digest" goftp:latest
+          docker logout ghcr.io
       - name: SSH
         if: steps.settings.outputs.ready == 'true'
         env:

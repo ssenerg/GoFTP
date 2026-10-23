@@ -23,6 +23,16 @@ docker compose up -d --build
 docker compose exec goftp goftp user add alice --role superadmin
 ```
 
+Instead of building it, you can use the image CI publishes for every commit
+on `main`, for amd64 and arm64: `ghcr.io/ssenerg/goftp`, tagged `latest`
+and `sha-COMMIT` (the first 7 characters of the commit). Pull it, name it
+as Compose expects, then start without `--build`:
+
+```sh
+docker pull ghcr.io/ssenerg/goftp && docker tag ghcr.io/ssenerg/goftp goftp
+docker compose up -d
+```
+
 `user add` prints a temporary password. Open http://localhost:8080, sign in
 and choose a new password; more users can then be added in the browser
 (see [Users and roles](#users-and-roles)). The database lives in the
@@ -319,9 +329,10 @@ passwords ignore case and surrounding spaces).
 ## Deploying
 
 Every push to `main` that passes CI is deployed to a Linux server with
-Docker Compose: the `deploy` job builds the image, sends it over SSH and
-runs [`deploy/deploy.sh`](deploy/deploy.sh) there, which restarts goftp
-with it. If goftp does not keep running, the script puts the image that
+Docker Compose: the `docker` job publishes the image to `ghcr.io` (see
+[Quick start](#quick-start-with-docker-compose)), and the `deploy` job sends
+that same image over SSH and runs [`deploy/deploy.sh`](deploy/deploy.sh)
+there, which restarts goftp with it. If goftp does not keep running, the script puts the image that
 ran before back and the job fails, with goftp's last logs. The server pulls
 no goftp image from a registry; it needs the `postgres:18-alpine` image
 once, as before.
@@ -373,7 +384,8 @@ empty. Manage goftp from the new directory from then on, e.g. `cd
 
 To deploy again, run the CI workflow on `main` (Actions → CI → Run
 workflow). To go back to an earlier version, re-run the CI run of its
-commit, or on the server go back one deploy:
+commit (which also points `latest` back to it), or on the server go back
+one deploy:
 
 ```sh
 cd /opt/goftp && docker image tag goftp:previous goftp:latest && docker compose up -d --force-recreate goftp
@@ -393,4 +405,5 @@ GOFTP_TEST_DATABASE_URL="postgres://postgres:secret@localhost/goftp_test" go tes
 [CI](.github/workflows/ci.yml) runs these with Postgres on every pull request,
 along with gofmt, `go vet`, builds for Windows, macOS and FreeBSD,
 [govulncheck](https://go.dev/doc/security/vuln/) (also weekly) and a build
-of the Docker image, and deploys `main` (see [Deploying](#deploying)).
+of the Docker image for amd64 and arm64. For `main`, it publishes the image
+to `ghcr.io` and deploys it (see [Deploying](#deploying)).
