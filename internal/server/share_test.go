@@ -401,7 +401,15 @@ func TestSharesPage(t *testing.T) {
 	}
 	for role, want := range map[string]bool{"superadmin": true, "admin": true, "operator": false} {
 		if _, body := f.as(role).do(t, "GET", "/"); strings.Contains(body, `href="/.shares/"`) != want {
-			t.Errorf("%s: menu entry shown = %v", role, !want)
+			t.Errorf("%s: Shared tab shown = %v", role, !want)
+		}
+	}
+	// The top bar's tabs say where the visitor is.
+	const filesTab, sharedTab = `<a href="/" aria-current="true">`, `<a href="/.shares/" aria-current="page">`
+	for target, want := range map[string]string{"/": filesTab, "/docs/": filesTab, sharesPath: sharedTab} {
+		_, body := f.as("admin").do(t, "GET", target, "Accept", "text/html")
+		if !strings.Contains(body, want) || strings.Contains(body, filesTab) && strings.Contains(body, sharedTab) {
+			t.Errorf("%s: tabs do not mark %s", target, want)
 		}
 	}
 

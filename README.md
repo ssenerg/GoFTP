@@ -259,9 +259,9 @@ files and download it as a zip.
 
 A link never gives more than its creator may still read and share: it
 stops working when they lose those rights, or when what it leads to is
-moved or deleted. **Shared links** in the menu lists your links, and for
-superadmins everyone's, to revoke them. Deleting a user, or giving them a
-new temporary password, ends their links too. Scripts:
+moved or deleted. **Shared**, next to **Files** in the top bar, lists your
+links, and for superadmins everyone's, to revoke them. Deleting a user, or
+giving them a new temporary password, ends their links too. Scripts:
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" -d action=create -d path=/docs/report.pdf -d expires=7d https://host/.shares/

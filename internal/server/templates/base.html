@@ -113,6 +113,21 @@
   .brand { display: inline-flex; align-items: center; gap: 10px; color: var(--text); font-weight: 700; font-size: 17px; letter-spacing: -0.01em; }
   .brand:hover { color: var(--text); }
   .logo { width: 30px; height: 30px; flex: none; }
+  .topbar-start { display: flex; align-items: center; gap: 24px; min-width: 0; }
+  .sections { display: flex; gap: 4px; }
+  .sections a {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 36px;
+    padding: 0 12px;
+    border-radius: var(--radius-sm);
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 14px;
+  }
+  .sections a:hover { background: var(--hover); color: var(--text); }
+  .sections a[aria-current] { background: var(--accent-soft); color: var(--accent); }
   .menu { position: relative; }
   .menu > summary {
     display: flex;
@@ -314,6 +329,7 @@
     border-radius: var(--radius);
     box-shadow: var(--shadow-lg);
   }
+  .popover.start { left: 0; right: auto; }
   .popover input { height: 38px; }
   .popover-error { color: var(--danger); font-size: 13px; }
   .popover-actions { display: flex; justify-content: flex-end; }
@@ -578,6 +594,15 @@
   @media (max-width: 560px) {
     .topbar { height: 56px; padding: 0 14px; }
     .who, .menu .badge { display: none; }
+    .topbar-start { gap: 12px; }
+    .sections a { padding: 0 10px; }
+    .sections .i { display: none; }
+    /* The toolbar's popovers open below their button, as wide as the
+       toolbar: aligned to a button on the left, they would leave the
+       screen. */
+    .tools { position: relative; }
+    .share-here, .newfolder { position: static; }
+    .tools .popover { top: auto; left: 0; right: 0; width: auto; margin-top: 8px; }
     .container { padding: 18px 14px 32px; }
     .head h1 { font-size: 22px; }
     .tools, .search { width: 100%; }
@@ -593,7 +618,15 @@
 
 {{define "topbar"}}
 <header class="topbar">
-  <a class="brand" href="{{with .Share}}{{.Root}}{{else}}/{{end}}"><svg class="logo" aria-hidden="true"><use href="#i-logo"/></svg>goftp</a>
+  <div class="topbar-start">
+    <a class="brand" href="{{with .Share}}{{.Root}}{{else}}/{{end}}"><svg class="logo" aria-hidden="true"><use href="#i-logo"/></svg>goftp</a>
+    {{if and .User .Shares (not .Shared)}}
+    <nav class="sections" aria-label="Sections">
+      <a href="/"{{if eq .Section "files"}} aria-current="true"{{end}}><svg class="i" aria-hidden="true"><use href="#i-folder"/></svg>Files</a>
+      <a href="/.shares/"{{if eq .Section "shared"}} aria-current="page"{{end}}><svg class="i" aria-hidden="true"><use href="#i-link"/></svg>Shared</a>
+    </nav>
+    {{end}}
+  </div>
   {{if .Shared}}
   {{with .Share}}<span class="shared-by"><svg class="i" aria-hidden="true"><use href="#i-link"/></svg><span>Shared by <strong>{{.By}}</strong></span></span>{{end}}
   {{else if .User}}
@@ -601,7 +634,6 @@
     <summary aria-label="Account menu"><span class="avatar" aria-hidden="true">{{initial .User}}</span><span class="who">{{.User}}</span>{{with .Role}}<span class="badge">{{.}}</span>{{end}}<svg class="i chev" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
     <div class="menu-panel">
       <div class="menu-head">Signed in as <strong>{{.User}}</strong>{{with .Role}}<span class="role">{{.}}</span>{{end}}</div>
-      {{if .Shares}}<a href="/.shares/"><svg class="i" aria-hidden="true"><use href="#i-link"/></svg>Shared links</a>{{end}}
       {{if .Admin}}<a href="/.admin/users"><svg class="i" aria-hidden="true"><use href="#i-users"/></svg>Users and rules</a>{{end}}
       <a href="/.auth/password"><svg class="i" aria-hidden="true"><use href="#i-key"/></svg>Change password</a>
       <form method="post" action="/.auth/logout"><button type="submit"><svg class="i" aria-hidden="true"><use href="#i-logout"/></svg>Sign out</button></form>
