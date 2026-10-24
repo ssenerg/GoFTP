@@ -216,8 +216,8 @@ token. `POST /.auth/logout` ends the session. Sessions last
   needs a Content-Length.
 
 The target directory must exist, and `upload.max_size` caps each file.
-Uploads stop short of the disk's last `upload.min_free` bytes (1 GiB by
-default; `0` turns the check off), which stay for the database and
+Uploads stop short of the disk's last `upload.min_free` bytes
+(`GOFTP_UPLOAD_MIN_FREE`; 1 GiB by default, `0` turns the check off), which stay for the database and
 everything else on that disk: the upload gets `507 Insufficient Storage`.
 Users who may upload new files into a folder (`write`) can also create
 folders in it, with the "New folder" button or
