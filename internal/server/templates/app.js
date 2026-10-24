@@ -26,9 +26,20 @@
     return svg;
   };
 
+  // detailOf reads why the server refused a request: the second line of
+  // its plain-text answer, if it has one.
+  const detailOf = async resp => {
+    if (!resp) return "";
+    try {
+      return ((await resp.text()).split("\n")[1] || "").trim();
+    } catch {
+      return "";
+    }
+  };
+
   // Confirmations are shown once, not again on reload.
   const params = new URLSearchParams(location.search);
-  const shown = ["uploaded", "created", "renamed", "deleted", "done"].filter(p => params.has(p));
+  const shown = ["uploaded", "created", "renamed", "restored", "deleted", "undo", "trashed", "done"].filter(p => params.has(p));
   if (shown.length) {
     for (const p of shown) params.delete(p);
     history.replaceState(null, "", location.pathname + (params.size ? "?" + params : ""));
@@ -305,29 +316,37 @@
             return;
           }
           let status = 400;
+          let resp = null;
           if (kind === "delete" || to !== "") {
             const body = new URLSearchParams(new FormData(form));
             if (kind === "rename") body.set("to", to);
             submit.disabled = true;
             try {
-              status = (await fetch(form.action, { method: "POST", body })).status;
+              resp = await fetch(form.action, { method: "POST", body });
+              status = resp.status;
             } catch {
               status = 0;
             }
             submit.disabled = false;
           }
           if (status === 201 || status === 204) {
-            location.assign(form.action + (kind === "rename" ? "?renamed=" + encodeURIComponent(to) : "?deleted=1"));
+            // A deletion that went to the trash can be undone.
+            const ids = resp.headers.get("Goftp-Trash-Ids");
+            location.assign(form.action + (kind === "rename" ? "?renamed=" + encodeURIComponent(to)
+              : "?deleted=1" + (ids ? "&undo=" + encodeURIComponent(ids.split(",")[0].trim()) : "")));
             return;
           }
-          error.textContent = failed[kind][status] || `It could not be ${kind}d (error ${status}).`;
+          error.textContent = (await detailOf(resp)) || failed[kind][status] || `It could not be ${kind}d (error ${status}).`;
           error.hidden = false;
           if (kind === "rename") form.elements.to.select();
         });
       }
-      $(".delete-note", pop).textContent = isDir
-        ? `Delete the folder “${name}” and everything in it? This cannot be undone.`
-        : `Delete “${name}”? This cannot be undone.`;
+      const keep = $("form[data-kind=delete]", pop).dataset.trash;
+      $(".delete-note", pop).textContent = keep
+        ? `Move ${isDir ? "the folder " : ""}“${name}” to the trash? It can be restored from there for ${keep}.`
+        : isDir
+          ? `Delete the folder “${name}” and everything in it? This cannot be undone.`
+          : `Delete “${name}”? This cannot be undone.`;
       link.after(pop);
       // Upwards when it would end below the window and fits above.
       const box = pop.getBoundingClientRect();

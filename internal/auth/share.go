@@ -131,14 +131,20 @@ func (s *Service) RevokeShare(ctx context.Context, u *User, id int64, all bool) 
 }
 
 // MayShare reports whether username may create links anywhere at all.
-func (s *Service) MayShare(username string) bool {
+func (s *Service) MayShare(username string) bool { return s.mayAnywhere(username, ActShare) }
+
+// MayDelete reports whether username may delete anything anywhere.
+func (s *Service) MayDelete(username string) bool { return s.mayAnywhere(username, ActDelete) }
+
+// mayAnywhere reports whether some rule lets username perform act.
+func (s *Service) mayAnywhere(username, act string) bool {
 	for _, sub := range []string{Subject(username), Anonymous} {
 		perms, err := s.enforcer.GetImplicitPermissionsForUser(sub)
 		if err != nil {
 			continue
 		}
 		for _, p := range perms {
-			if len(p) > 2 && (p[2] == ActShare || p[2] == "*") {
+			if len(p) > 2 && (p[2] == act || p[2] == "*") {
 				return true
 			}
 		}

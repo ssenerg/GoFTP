@@ -18,8 +18,16 @@
   {{with .Renamed}}
   <div class="alert success banner" id="renamed" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg><span>Renamed to <a href="{{.Href}}">{{.Name}}</a>.</span></div>
   {{end}}
+  {{with .Restored}}
+  <div class="alert success banner" id="restored" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg><span>Restored <a href="{{.Href}}">{{.Name}}</a> from the trash.</span></div>
+  {{end}}
   {{if .Deleted}}
-  <div class="alert success banner" id="deleted" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg>Deleted.</div>
+  <div class="alert success banner" id="deleted" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg>
+    {{- if .Undo}}<span>Moved <strong>{{.Undo.Name}}</strong> to the trash.</span>
+    <form method="post" action="/.trash/"><input type="hidden" name="action" value="restore"><input type="hidden" name="id" value="{{.Undo.ID}}"><button type="submit" class="linkish">Undo</button></form>
+    {{- else if .Trashed}}<span>Moved {{if eq .Deleted 1}}it{{else}}{{.Deleted}} items{{end}} to the <a href="/.trash/">trash</a>.</span>
+    {{- else}}<span>Deleted{{if ne .Deleted 1}} {{.Deleted}} items{{end}}.</span>{{end}}
+  </div>
   {{end}}
 
   <div class="head">
@@ -149,9 +157,14 @@
   <input type="hidden" name="action" value="create"><input type="hidden" name="path" value="{{.Path}}">
   {{template "share-fields"}}
 </form>
-<form method="post" action="{{.Action}}" class="item-form" data-kind="delete"{{if not .CanDelete}} hidden{{end}}>
+<form method="post" action="{{.Action}}" class="item-form" data-kind="delete" data-trash="{{.TrashKeep}}"{{if not .CanDelete}} hidden{{end}}>
   <input type="hidden" name="delete" value="{{.Name}}">
+  {{- if .TrashKeep}}
+  <p class="delete-note">Move {{if .IsDir}}this folder{{else}}this file{{end}} to the trash? It can be restored from there for {{.TrashKeep}}.</p>
+  <label class="check"><input type="checkbox" name="permanent" value="1"> Delete it for good instead</label>
+  {{- else}}
   <p class="delete-note">{{if .IsDir}}Delete this folder and everything in it?{{else}}Delete this file?{{end}} This cannot be undone.</p>
+  {{- end}}
   <p class="popover-error" role="alert" hidden></p>
   <div class="popover-actions"><button type="submit" class="btn danger small"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Delete</button></div>
 </form>

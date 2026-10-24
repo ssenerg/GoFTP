@@ -44,6 +44,9 @@ upload:
   max_size: 0            # per file, e.g. 10GiB; 0 = unlimited
   resume_window: 24h     # how long an interrupted upload can be resumed
 
+trash:                   # deleted files and folders, which can be restored
+  keep: 720h             # how long (30 days); 0 deletes at once
+
 cache:                   # thumbnails of images
   dir: ""                # default: goftp in the user's cache directory; not in dir
   max_size: 512MiB       # 0 disables the cache

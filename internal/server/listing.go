@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -56,6 +57,7 @@ type page struct {
 	Role      string
 	Admin     bool   // may administer users and rules
 	Shares    bool   // may share links, or administers them
+	Trash     bool   // may delete, so the trash is of use
 	Section   string // the top bar's tab for the page: "files", "shared" or ""
 	Here      string
 	MinLength int
@@ -73,10 +75,13 @@ func (s *Server) page(c fiber.Ctx, title string) page {
 		p.Role = s.auth.Role(u.Username)
 		p.Admin = s.auth.IsSuperadmin(u.Username)
 		p.Shares = p.Admin || s.auth.MayShare(u.Username)
+		p.Trash = s.cfg.Trash.Keep > 0 && (p.Admin || s.auth.MayDelete(u.Username))
 	}
 	switch {
 	case strings.HasPrefix(c.Path(), sharesPath):
 		p.Section = "shared"
+	case strings.HasPrefix(c.Path(), trashPath):
+		p.Section = "trash"
 	case !strings.HasPrefix(c.Path(), "/."):
 		p.Section = "files"
 	}
@@ -109,12 +114,21 @@ type listing struct {
 	Uploaded int
 	Created  *listItem
 	Renamed  *listItem
-	Deleted  bool
-	Manage   bool      // some entry may be renamed, deleted or shared
-	Selected *listItem // its forms are shown
+	Restored *listItem
+	Deleted  int  // entries just deleted
+	Trashed  bool // they went to the trash
+	Undo     *undo
+	// TrashKeep says how long deleted entries stay in the trash; "" if
+	// they are deleted at once.
+	TrashKeep string
+	Manage    bool      // some entry may be renamed, deleted or shared
+	Selected  *listItem // its forms are shown
 	// ShareHere is set when the visitor may share this folder.
 	ShareHere bool
 }
+
+// undo restores the one entry a deletion moved to the trash.
+type undo struct{ ID, Name string }
 
 // itemForms is what the rename, share and delete forms of an entry show.
 type itemForms struct {
@@ -122,12 +136,13 @@ type itemForms struct {
 	Name, Path                     string
 	IsDir                          bool
 	CanRename, CanDelete, CanShare bool
+	TrashKeep                      string
 }
 
 // Forms describes the forms for it; nil gives the blank ones the page's
 // script fills in.
 func (l listing) Forms(it *listItem) itemForms {
-	f := itemForms{Action: l.Action}
+	f := itemForms{Action: l.Action, TrashKeep: l.TrashKeep}
 	if it != nil {
 		f.Name, f.Path, f.IsDir = it.Name, it.Path, it.IsDir
 		f.CanRename, f.CanDelete, f.CanShare = it.CanRename, it.CanDelete, it.CanShare
@@ -257,7 +272,7 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 	}
 	// Only entries that are listed are confirmed, so links cannot be used to
 	// show made-up text.
-	created, renamed, selected := c.Query("created"), c.Query("renamed"), c.Query("item")
+	created, renamed, restored, selected := c.Query("created"), c.Query("renamed"), c.Query("restored"), c.Query("item")
 	for i := range data.Items {
 		switch it := &data.Items[i]; it.Name {
 		case created:
@@ -266,18 +281,54 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 			}
 		case renamed:
 			it.New, data.Renamed = true, it
+		case restored:
+			it.New, data.Restored = true, it
 		case selected:
 			if it.CanDelete || it.CanShare {
 				it.Selected, data.Selected = true, it
 			}
 		}
 	}
-	data.Deleted = c.Query("deleted") == "1"
+	if s.cfg.Trash.Keep > 0 {
+		data.TrashKeep = keepText(s.cfg.Trash.Keep)
+	}
+	if err := s.deletedBanner(c, &data); err != nil {
+		return err
+	}
 	if create || replace {
 		data.Upload = &uploadForm{Action: data.Action, Replace: replace}
 	}
 	data.Mkdir = create
 	return s.render(c, fiber.StatusOK, "listing", data)
+}
+
+// deletedBanner confirms a deletion (see deletedQuery). Undo is offered if
+// the visitor may restore what went to the trash.
+func (s *Server) deletedBanner(c fiber.Ctx, data *listing) error {
+	n, err := strconv.Atoi(c.Query("deleted"))
+	if err != nil || n <= 0 {
+		return nil
+	}
+	data.Deleted, data.Trashed = n, c.Query("trashed") == "1"
+	id := c.Query("undo")
+	if id == "" || n != 1 {
+		return nil
+	}
+	data.Trashed = true
+	trash, box, note, _, err := s.trashEntry(id)
+	if errors.Is(err, fiber.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_ = box.Close()
+	_ = trash.Close()
+	if ok, _, err := mayRestore(s.visitorRules(c), note); err != nil || !ok {
+		return err
+	}
+	data.Undo = &undo{ID: id, Name: path.Base(note.Path)}
+	return nil
 }
 
 // folderItems lists the entries of the folder dir at urlPath, which really

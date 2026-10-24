@@ -30,7 +30,8 @@ const (
 	// Secure, host-only and scoped to "/".
 	secureCookieName = "__Host-goftp_session"
 
-	maxFormSize = 8 << 10
+	// Forms may name many entries at once (see manage).
+	maxFormSize = 64 << 10
 	dbTimeout   = 10 * time.Second
 )
 
@@ -223,9 +224,25 @@ func (s *Server) clearCookie(c fiber.Ctx) {
 	})
 }
 
-// readForm reads a small URL-encoded or JSON object body. The body is
-// streamed, so fasthttp's own form parsing (which buffers it) is not used.
+// readForm reads a small URL-encoded or JSON object body, keeping the first
+// value of each field (see readFormValues).
 func (s *Server) readForm(c fiber.Ctx) (map[string]string, bool, error) {
+	values, isJSON, err := s.readFormValues(c)
+	if err != nil {
+		return nil, isJSON, err
+	}
+	form := make(map[string]string, len(values))
+	for k, v := range values {
+		form[k] = v[0]
+	}
+	return form, isJSON, nil
+}
+
+// readFormValues reads a small URL-encoded or JSON object body, whose
+// fields may repeat: in JSON, a field's value is a string or an array of
+// them. The body is streamed, so fasthttp's own form parsing (which
+// buffers it) is not used.
+func (s *Server) readFormValues(c fiber.Ctx) (url.Values, bool, error) {
 	mediaType, _, _ := mime.ParseMediaType(c.Get(fiber.HeaderContentType))
 	isJSON := mediaType == fiber.MIMEApplicationJSON
 	if !isJSON && mediaType != fiber.MIMEApplicationForm {
@@ -244,21 +261,33 @@ func (s *Server) readForm(c fiber.Ctx) (map[string]string, bool, error) {
 	}
 	s.finishBody(c, body)
 
-	form := make(map[string]string)
-	if isJSON {
-		if json.Unmarshal(data, &form) != nil {
+	if !isJSON {
+		values, err := url.ParseQuery(string(data))
+		if err != nil {
+			return nil, false, fiber.ErrBadRequest
+		}
+		return values, false, nil
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(data, &fields) != nil {
+		return nil, true, fiber.ErrBadRequest
+	}
+	values := make(url.Values, len(fields))
+	for k, raw := range fields {
+		var one string
+		if json.Unmarshal(raw, &one) == nil {
+			values[k] = []string{one}
+			continue
+		}
+		var many []string
+		if json.Unmarshal(raw, &many) != nil {
 			return nil, true, fiber.ErrBadRequest
 		}
-		return form, true, nil
+		if len(many) > 0 {
+			values[k] = many
+		}
 	}
-	values, err := url.ParseQuery(string(data))
-	if err != nil {
-		return nil, false, fiber.ErrBadRequest
-	}
-	for k, v := range values {
-		form[k] = v[0]
-	}
-	return form, false, nil
+	return values, true, nil
 }
 
 // signInsPerMinute bounds a user's successful password checks: hashing

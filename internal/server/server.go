@@ -45,6 +45,9 @@ type Server struct {
 	signIns   *rateLimiter // successful password checks per user
 	errEscape error
 	lockMu    sync.Mutex
+	// trashMu orders restoring entries from the trash against removing
+	// them for good.
+	trashMu sync.Mutex
 	// proxyNoted is set once untrusted proxy headers have been logged.
 	proxyNoted atomic.Bool
 
@@ -131,6 +134,9 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 	s.app.Get(strings.TrimSuffix(sharesPath, "/"), func(c fiber.Ctx) error { return s.redirect(c, sharesPath) })
 	s.app.Get(sharesPath, s.sharesPage)
 	s.app.Post(sharesPath, s.sharesAction)
+	s.app.Get(strings.TrimSuffix(trashPath, "/"), func(c fiber.Ctx) error { return s.redirect(c, trashPath) })
+	s.app.Get(trashPath, s.trashPage)
+	s.app.Post(trashPath, s.trashAction)
 	s.app.Get(sharePrefix+"*", s.shared)
 	s.app.Post(sharePrefix+"*", s.unlockShare)
 	s.app.Head(uploadsPrefix+"*", s.headUpload)
@@ -174,6 +180,12 @@ func (s *Server) Listen(ctx context.Context) error {
 		s.purgeUploads(ctx)
 	}()
 	defer func() { <-purged }()
+	emptied := make(chan struct{})
+	go func() {
+		defer close(emptied)
+		s.purgeTrash(ctx)
+	}()
+	defer func() { <-emptied }()
 
 	served := make(chan error, 1)
 	go func() {
