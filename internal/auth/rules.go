@@ -1,6 +1,10 @@
 package auth
 
-import "strings"
+import (
+	"math"
+	"path"
+	"strings"
+)
 
 // DenyPrefix starts the paths of rules that deny, as "!" does in a
 // .gitignore: "!/private/*" keeps its subject out of /private/.
@@ -27,6 +31,31 @@ type rule struct {
 	distance int // 0 for the user's own rules, 1 for their roles', and so on
 }
 
+// builtIn is the distance of the rules goftp makes up itself: after every
+// rule for the same path that an administrator added, so those decide.
+const builtIn = math.MaxInt32
+
+// SetHomes keeps users' homes in the folder at the URL path homes, "" for
+// none. Everyone may do anything in their own home, homes/NAME/, but
+// delete it, and nobody may open the others, unless rules for those paths
+// say otherwise.
+// It is set before serving.
+func (s *Service) SetHomes(homes string) { s.homes.Store(homes) }
+
+// Homes returns the URL path of the folder of homes, "" for none.
+func (s *Service) Homes() string {
+	homes, _ := s.homes.Load().(string)
+	return homes
+}
+
+// HomeOf returns the URL path of the home of username, "" without homes.
+func (s *Service) HomeOf(username string) string {
+	if homes := s.Homes(); homes != "" {
+		return path.Join(homes, username)
+	}
+	return ""
+}
+
 // RulesFor gathers the rules that apply to u, nil for anonymous visitors.
 func (s *Service) RulesFor(u *User) (*Rules, error) {
 	policies, err := s.enforcer.GetPolicy()
@@ -34,12 +63,23 @@ func (s *Service) RulesFor(u *User) (*Rules, error) {
 		return nil, err
 	}
 	r := &Rules{anonymous: compile(policies, map[string]int{Anonymous: 0})}
+	homes := s.Homes()
+	closed := rule{base: homes + "/", wildcard: true, deny: true, act: "*", distance: builtIn}
+	if homes != "" {
+		r.anonymous = append(r.anonymous, closed)
+	}
 	if u != nil {
 		distances, err := s.distances(Subject(u.Username))
 		if err != nil {
 			return nil, err
 		}
 		r.own = compile(policies, distances)
+		if homes != "" {
+			home := s.HomeOf(u.Username) + "/"
+			// The home itself stays, whatever happens in it.
+			r.own = append(r.own, closed, rule{base: home, wildcard: true, act: "*", distance: builtIn},
+				rule{base: home, deny: true, act: ActDelete, distance: builtIn})
+		}
 	}
 	return r, nil
 }
