@@ -201,6 +201,43 @@ func (s *Store) ShareByToken(_ context.Context, tokenHash []byte) (*auth.Share, 
 	return &c, nil
 }
 
+func (s *Store) ShareByID(_ context.Context, id int64) (*auth.Share, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sh := range s.shares {
+		if sh.ID == id && time.Now().Before(sh.ExpiresAt) {
+			c := *sh
+			c.Creator = s.users[sh.CreatedBy].Username
+			return &c, nil
+		}
+	}
+	return nil, auth.ErrNotFound
+}
+
+func (s *Store) UseShare(_ context.Context, id int64) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sh := range s.shares {
+		if sh.ID == id && time.Now().Before(sh.ExpiresAt) && !sh.UsedUp() {
+			sh.Uses++
+			sh.LastUsedAt = time.Now()
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *Store) TouchShare(_ context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sh := range s.shares {
+		if sh.ID == id {
+			sh.LastUsedAt = time.Now()
+		}
+	}
+	return nil
+}
+
 func (s *Store) Shares(_ context.Context, userID int64) ([]auth.Share, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

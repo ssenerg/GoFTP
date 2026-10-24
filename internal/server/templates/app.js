@@ -26,9 +26,21 @@
     return svg;
   };
 
+  // detailOf reads why the server refused a request: the second line of
+  // its plain-text answer, if it has one.
+  const detailOf = async resp => {
+    if (!resp) return "";
+    try {
+      return ((await resp.text()).split("\n")[1] || "").trim();
+    } catch {
+      return "";
+    }
+  };
+
   // Confirmations are shown once, not again on reload.
   const params = new URLSearchParams(location.search);
-  const shown = ["uploaded", "created", "renamed", "deleted", "done"].filter(p => params.has(p));
+  const shown = ["uploaded", "created", "renamed", "restored", "deleted", "undo", "trashed", "moved", "copied", "to", "done"]
+    .filter(p => params.has(p));
   if (shown.length) {
     for (const p of shown) params.delete(p);
     history.replaceState(null, "", location.pathname + (params.size ? "?" + params : ""));
@@ -63,6 +75,8 @@
   }
 
   // Filtering the listing; "/" jumps to the filter, Escape clears it.
+  // Enter searches the folders in it too, where the filter is a search
+  // form.
   const filter = $("#filter");
   if (filter) {
     $("#search").hidden = false;
@@ -162,6 +176,12 @@
   const shareForm = (form, name) => {
     const error = $(".popover-error", form);
     const submit = $("button[type=submit]", form);
+    // What a use is depends on what the link lets people do.
+    const noun = $(".share-noun", form);
+    const kind = form.elements.kind;
+    kind.addEventListener("change", () => {
+      noun.textContent = kind.value === "upload" ? "Files" : "Downloads";
+    });
     form.addEventListener("submit", async e => {
       e.preventDefault();
       submit.disabled = true;
@@ -186,6 +206,7 @@
         return;
       }
       const password = form.elements.password.value !== "";
+      const limit = link.max_uses ? `, for ${link.max_uses} ${link.upload ? "files" : "downloads"} at most` : "";
       const title = document.createElement("p");
       title.className = "form-title";
       title.append(icon("check"), "Link created");
@@ -197,8 +218,8 @@
       url.addEventListener("focus", () => url.select());
       const note = document.createElement("p");
       note.className = "share-note";
-      note.textContent = `Anyone with it${password ? " and the password" : ""} can open “${name}” until ` +
-        `${when.format(new Date(link.expires_at))}. Copy it now: it is shown only this once.`;
+      note.textContent = `Anyone with it${password ? " and the password" : ""} can ${link.upload ? "upload files to" : "open"} “${name}” ` +
+        `until ${when.format(new Date(link.expires_at))}${limit}. Copy it now: it is shown only this once.`;
       const result = document.createElement("div");
       result.className = "share-result";
       result.append(title, url);
@@ -249,7 +270,45 @@
     });
   }
 
-  // Rename, share and delete: a popover for each entry, made from a
+  // Moving and copying entries to another folder: on success, the folder's
+  // page says where they went.
+  const moveFailed = {
+    0: "The connection was lost. Try again.",
+    400: "Name the folder as a path, such as /photos/2024.",
+    401: "You were signed out. Sign in and try again.",
+    403: "You may not do that there.",
+    404: "There is no such folder.",
+    409: "Something with this name is in that folder already, or is being uploaded.",
+  };
+  const moveForm = form => {
+    const error = $(".popover-error", form);
+    form.addEventListener("submit", async e => {
+      e.preventDefault();
+      const op = e.submitter && e.submitter.value === "move" ? "move" : "copy";
+      const body = new URLSearchParams(new FormData(form));
+      body.set("op", op);
+      const buttons = $$("button", form);
+      for (const b of buttons) b.disabled = true;
+      let resp = null;
+      let status = 0;
+      try {
+        resp = await fetch(form.getAttribute("action"), { method: "POST", body });
+        status = resp.status;
+      } catch {
+        status = 0;
+      }
+      for (const b of buttons) b.disabled = false;
+      if (status === 201) {
+        location.assign(form.getAttribute("action") + `?${op === "move" ? "moved" : "copied"}=${body.getAll("pick").length}` +
+          "&to=" + encodeURIComponent(form.elements.into.value.trim()));
+        return;
+      }
+      error.textContent = (await detailOf(resp)) || moveFailed[status] || `It could not be ${op === "move" ? "moved" : "copied"} (error ${status}).`;
+      error.hidden = false;
+    });
+  };
+
+  // Rename, move, share and delete: a popover for each entry, made from a
   // template.
   const itemForms = $("#item-actions");
   if (itemForms) {
@@ -291,7 +350,15 @@
         form.hidden = link.dataset[kind] !== "true";
         if (kind === "share") {
           form.elements.path.value = link.dataset.path;
+          // Only folders take uploads.
+          $(".share-kind", form).hidden = !isDir;
           shareForm(form, name);
+          continue;
+        }
+        if (kind === "move") {
+          form.elements.pick.value = name;
+          $("button[value=move]", form).hidden = link.dataset.delete !== "true";
+          moveForm(form);
           continue;
         }
         const error = $(".popover-error", form);
@@ -305,29 +372,37 @@
             return;
           }
           let status = 400;
+          let resp = null;
           if (kind === "delete" || to !== "") {
             const body = new URLSearchParams(new FormData(form));
             if (kind === "rename") body.set("to", to);
             submit.disabled = true;
             try {
-              status = (await fetch(form.action, { method: "POST", body })).status;
+              resp = await fetch(form.action, { method: "POST", body });
+              status = resp.status;
             } catch {
               status = 0;
             }
             submit.disabled = false;
           }
           if (status === 201 || status === 204) {
-            location.assign(form.action + (kind === "rename" ? "?renamed=" + encodeURIComponent(to) : "?deleted=1"));
+            // A deletion that went to the trash can be undone.
+            const ids = resp.headers.get("Goftp-Trash-Ids");
+            location.assign(form.action + (kind === "rename" ? "?renamed=" + encodeURIComponent(to)
+              : "?deleted=1" + (ids ? "&undo=" + encodeURIComponent(ids.split(",")[0].trim()) : "")));
             return;
           }
-          error.textContent = failed[kind][status] || `It could not be ${kind}d (error ${status}).`;
+          error.textContent = (await detailOf(resp)) || failed[kind][status] || `It could not be ${kind}d (error ${status}).`;
           error.hidden = false;
           if (kind === "rename") form.elements.to.select();
         });
       }
-      $(".delete-note", pop).textContent = isDir
-        ? `Delete the folder “${name}” and everything in it? This cannot be undone.`
-        : `Delete “${name}”? This cannot be undone.`;
+      const keep = $("form[data-kind=delete]", pop).dataset.trash;
+      $(".delete-note", pop).textContent = keep
+        ? `Move ${isDir ? "the folder " : ""}“${name}” to the trash? It can be restored from there for ${keep}.`
+        : isDir
+          ? `Delete the folder “${name}” and everything in it? This cannot be undone.`
+          : `Delete “${name}”? This cannot be undone.`;
       link.after(pop);
       // Upwards when it would end below the window and fits above.
       const box = pop.getBoundingClientRect();
@@ -341,6 +416,8 @@
         // The name without its extension, ready to be typed over.
         const dot = isDir ? -1 : name.lastIndexOf(".");
         to.setSelectionRange(0, dot > 0 ? dot : name.length);
+      } else if (link.dataset.move === "true") {
+        $("form[data-kind=move] input[name=into]", pop).focus();
       } else if (link.dataset.share === "true") {
         $("form[data-kind=share] select", pop).focus();
       } else {
@@ -360,6 +437,148 @@
     });
     document.addEventListener("keydown", e => {
       if (e.key === "Escape" && open) close(true);
+    });
+  }
+
+  // Folder fields suggest the folders in what was typed so far, or those
+  // named like its last part.
+  let folderList = null;
+  let asked = "";
+  let suggestTimer;
+  const suggest = async field => {
+    if (!folderList) {
+      folderList = document.createElement("datalist");
+      folderList.id = "folders";
+      document.body.append(folderList);
+    }
+    const typed = field.value.trim();
+    const cut = typed.lastIndexOf("/") + 1;
+    const query = new URLSearchParams({ folders: "1", in: typed.slice(0, cut) || "/", q: typed.slice(cut) });
+    if (query.toString() === asked) return;
+    asked = query.toString();
+    try {
+      const resp = await fetch("/.search/?" + query, { headers: { Accept: "application/json" } });
+      if (!resp.ok || asked !== query.toString()) return;
+      const { results } = await resp.json();
+      folderList.replaceChildren(...results.map(r => Object.assign(document.createElement("option"), { value: r.path })));
+    } catch {
+      // No suggestions, then.
+    }
+  };
+  const folderField = e => e.target.matches && e.target.matches("input[list=folders]");
+  document.addEventListener("focusin", e => {
+    if (folderField(e)) suggest(e.target);
+  });
+  document.addEventListener("input", e => {
+    if (!folderField(e)) return;
+    clearTimeout(suggestTimer);
+    suggestTimer = setTimeout(() => suggest(e.target), 150);
+  });
+
+  // Picking entries to act on them together: a bar below the list follows
+  // the ticks. Its zip downloads as usual; its other forms say in place why
+  // they failed, and on success the page says what happened.
+  const picked = $("#picked");
+  if (picked) {
+    const boxes = $$("input[name=pick]");
+    const all = $(".pick-all");
+    const count = $(".picked-count", picked);
+    const clear = $(".picked-clear", picked);
+    const shown = b => !b.closest("tr").hidden;
+    let last = null;
+    const update = () => {
+      const n = boxes.filter(b => b.checked).length;
+      for (const b of boxes) b.closest("tr").classList.toggle("ticked", b.checked);
+      picked.hidden = n === 0;
+      count.textContent = `${n} picked`;
+      clear.hidden = n === 0;
+      const visible = boxes.filter(shown);
+      all.checked = visible.length > 0 && visible.every(b => b.checked);
+      all.indeterminate = n > 0 && !all.checked;
+    };
+    picked.classList.add("live");
+    all.hidden = false;
+    all.addEventListener("change", () => {
+      for (const b of boxes.filter(shown)) b.checked = all.checked;
+      update();
+    });
+    for (const [i, b] of boxes.entries()) {
+      b.addEventListener("click", e => {
+        // Shift-click ticks or unticks the run from the last one clicked.
+        if (e.shiftKey && last !== null) {
+          for (const other of boxes.slice(Math.min(last, i), Math.max(last, i) + 1).filter(shown)) other.checked = b.checked;
+        }
+        last = i;
+        update();
+      });
+    }
+    clear.addEventListener("click", () => {
+      for (const b of boxes) b.checked = false;
+      update();
+    });
+    // Browsers keep ticks across reloads.
+    update();
+
+    const pops = $$(".picked-pop", picked);
+    for (const box of pops) {
+      box.addEventListener("toggle", () => {
+        if (!box.open) return;
+        for (const other of pops) if (other !== box) other.open = false;
+        place($(".popover", box));
+        const field = $("input[name=into]", box) || $("button[type=submit]", box);
+        field.focus();
+      });
+      box.addEventListener("keydown", e => {
+        if (e.key === "Escape" && box.open) {
+          box.open = false;
+          $("summary", box).focus();
+        }
+      });
+    }
+    document.addEventListener("click", e => {
+      for (const box of pops) if (box.open && !box.contains(e.target)) box.open = false;
+    });
+
+    const pickFailed = {
+      0: "The connection was lost. Try again.",
+      400: "Name the folder as a path, such as /photos/2024.",
+      401: "You were signed out. Sign in and try again.",
+      403: "You may not do that with all of them.",
+      404: "One of them, or that folder, is no longer there. Reload the page.",
+      409: "One of them is being uploaded right now, or its name is taken there.",
+    };
+    picked.addEventListener("submit", async e => {
+      const op = e.submitter && e.submitter.name === "op" ? e.submitter.value : "";
+      if (!op) return;
+      e.preventDefault();
+      const pop = e.submitter.closest(".popover");
+      const error = $(".popover-error", pop);
+      const body = new URLSearchParams(new FormData(picked));
+      body.set("op", op);
+      const action = picked.getAttribute("action");
+      const buttons = $$("button", pop);
+      for (const b of buttons) b.disabled = true;
+      let resp = null;
+      let status = 0;
+      try {
+        resp = await fetch(action, { method: "POST", body });
+        status = resp.status;
+      } catch {
+        status = 0;
+      }
+      for (const b of buttons) b.disabled = false;
+      const n = body.getAll("pick").length;
+      if (status === 204 && op === "delete") {
+        const ids = (resp.headers.get("Goftp-Trash-Ids") || "").split(",").map(id => id.trim()).filter(Boolean);
+        location.assign(action + `?deleted=${n}` + (ids.length === 1 && n === 1 ? "&undo=" + encodeURIComponent(ids[0]) : ids.length ? "&trashed=1" : ""));
+        return;
+      }
+      if (status === 201) {
+        location.assign(action + `?${op === "move" ? "moved" : "copied"}=${n}&to=` + encodeURIComponent(body.get("into").trim()));
+        return;
+      }
+      error.textContent = (await detailOf(resp)) || pickFailed[status] || `That failed (error ${status}).`;
+      error.hidden = false;
     });
   }
 
@@ -439,11 +658,14 @@
 
   // Uploads: files chosen or dropped anywhere on the page are sent one by
   // one, with progress. They resume after a lost connection, and after a
-  // reload once the same file is chosen again.
+  // reload once the same file is chosen again. Folders are created first,
+  // with the files in them going into them.
   const form = $("#upload");
   if (!form) return;
   const picker = $("input[type=file]", form);
   const replace = $("input[name=replace]", form);
+  // Upload links take files, but show nothing of the folder.
+  const dropbox = form.dataset.dropbox === "true";
   const panel = $("#transfers");
   const overlay = $("#drop");
   let active = 0;
@@ -466,7 +688,7 @@
       const refresh = document.createElement("a");
       refresh.href = form.action;
       refresh.className = "btn small";
-      refresh.textContent = "Refresh list";
+      refresh.textContent = dropbox ? "Start over" : "Refresh list";
       h.append(text, refresh);
     } else {
       text.textContent = "Unfinished uploads";
@@ -494,10 +716,11 @@
       case 0: return "The connection was lost.";
       case 400: return "This file name is not allowed.";
       case 401: return "You were signed out. Sign in and try again.";
-      case 403: return replace && !replace.checked
-        ? "You may not upload this here."
-        : "You may not upload or replace this here.";
-      case 404: return "This folder is no longer here.";
+      case 403:
+        if (dropbox) return "This link no longer lets anyone send files.";
+        return replace && !replace.checked ? "You may not upload this here." : "You may not upload or replace this here.";
+      case 404: return dropbox ? "This link no longer works." : "This folder is no longer here.";
+      case 410: return "This link was used as often as it may be.";
       case 409: return replace && !replace.checked
         ? "Already exists: tick “Replace files that already exist”, or rename it."
         : "A file or folder with this name exists or is being uploaded.";
@@ -512,9 +735,9 @@
   // uploads are remembered per file in this browser.
   const folder = form.getAttribute("action");
   const part = 64 << 20;
-  const storePrefix = "goftp-upload\n" + folder + "\n";
+  const storePrefix = dir => "goftp-upload\n" + dir + "\n";
   const store = {
-    key: (file, replacing) => storePrefix + [file.name, file.size, file.lastModified, replacing ? 1 : 0].join("\n"),
+    key: (file, replacing, dir) => storePrefix(dir) + [file.name, file.size, file.lastModified, replacing ? 1 : 0].join("\n"),
     get(key) {
       try { return JSON.parse(localStorage.getItem(key)); } catch { return null; }
     },
@@ -525,7 +748,7 @@
       try { localStorage.removeItem(key); } catch { /* storage disabled */ }
     },
     keys() {
-      try { return Object.keys(localStorage).filter(k => k.startsWith(storePrefix)); } catch { return []; }
+      try { return Object.keys(localStorage).filter(k => k.startsWith(storePrefix(folder))); } catch { return []; }
     },
   };
   const base64 = s => btoa(Array.from(new TextEncoder().encode(s), b => String.fromCharCode(b)).join(""));
@@ -574,14 +797,15 @@
     tick();
   });
 
-  // send uploads file and resolves with whether it was stored.
-  const send = async file => {
+  // send uploads file into the folder at the URL dir, showing it as label,
+  // and resolves with whether it was stored.
+  const send = async (file, dir, label) => {
     const replacing = Boolean(replace && replace.checked);
-    const key = store.key(file, replacing);
+    const key = store.key(file, replacing, dir);
     for (const r of $$(".transfer.paused", panel)) {
       if (r.dataset.key === key) r.remove();
     }
-    const t = row(file.name, human(file.size), "clock");
+    const t = row(label, human(file.size), "clock");
     const bar = document.createElement("progress");
     bar.max = 1;
     bar.value = 0;
@@ -623,7 +847,7 @@
       const patching = url && offset !== null;
       if (!url) {
         const meta = "filename " + base64(file.name) + (replacing ? ",replace " + base64("1") : "");
-        res = await request(t, "POST", folder, { "Upload-Length": String(file.size), "Upload-Metadata": meta });
+        res = await request(t, "POST", dir, { "Upload-Length": String(file.size), "Upload-Metadata": meta });
         if (res.status === 201) {
           url = new URL(res.getResponseHeader("Location"), location.href).pathname;
           if (file.size === 0) return finish(true);
@@ -708,14 +932,57 @@
     }
   })();
 
-  const upload = async files => {
-    if (!files.length) return;
+  // folderAt creates the folders on the way to the path dirs below this
+  // one, unless they exist, and resolves with the last one's URL, or with
+  // the status that stopped it. made remembers the folders of one upload.
+  const folderAt = (dirs, made) => {
+    if (!dirs.length) return Promise.resolve({ url: folder });
+    const key = dirs.join("/");
+    if (!made.has(key)) {
+      made.set(key, (async () => {
+        const parent = await folderAt(dirs.slice(0, -1), made);
+        if (!parent.url) return parent;
+        const name = dirs[dirs.length - 1];
+        let status = 0;
+        try {
+          status = (await fetch(parent.url, { method: "POST", body: new URLSearchParams({ folder: name }) })).status;
+        } catch {
+          status = 0;
+        }
+        // 409: it exists already, and what goes into it is added.
+        if (status !== 201 && status !== 409) return { status };
+        return { url: parent.url + encodeURIComponent(name) + "/" };
+      })());
+    }
+    return made.get(key);
+  };
+
+  // upload sends items, files with the folders they go into ({file, dirs}),
+  // after creating the folders in folders, which may be empty.
+  const upload = async (items, folders = []) => {
+    if (!items.length && !folders.length) return;
     const banner = $("#uploaded");
     if (banner) banner.remove();
-    active += files.length;
+    active += items.length;
     heading();
-    for (const file of files) {
-      const ok = await send(file);
+    const made = new Map();
+    for (const dirs of folders) {
+      const at = await folderAt(dirs, made);
+      if (!at.url) {
+        row(dirs.join("/") + "/", reason(at.status), "alert").r.classList.add("failed");
+        failed++;
+        heading();
+      }
+    }
+    for (const { file, dirs } of items) {
+      const at = await folderAt(dirs, made);
+      const label = [...dirs, file.name].join("/");
+      let ok = false;
+      if (at.url) {
+        ok = await send(file, at.url, label);
+      } else {
+        row(label, reason(at.status), "alert").r.classList.add("failed");
+      }
       active--;
       if (ok) done++;
       else failed++;
@@ -727,8 +994,35 @@
   picker.addEventListener("change", () => {
     const files = [...picker.files];
     picker.value = "";
-    upload(files);
+    upload(files.map(file => ({ file, dirs: [] })));
   });
+
+  // Choosing a folder: its files say where in it they are. Dotfiles,
+  // which the server refuses, are left out.
+  const folders = form.dataset.folders === "true";
+  const folderPicker = $(".folder-picker", form);
+  const skipped = n => {
+    if (!n) return;
+    row(`${n} hidden file${n === 1 ? "" : "s"} left out`, "Names starting with a dot are not uploaded.", "alert");
+    heading();
+  };
+  if (folders && folderPicker && "webkitdirectory" in folderPicker) {
+    const button = $(".dz-folder", form);
+    button.hidden = false;
+    button.addEventListener("click", () => folderPicker.click());
+    folderPicker.addEventListener("change", () => {
+      const items = [];
+      let hidden = 0;
+      for (const file of folderPicker.files) {
+        const parts = (file.webkitRelativePath || file.name).split("/");
+        if (parts.some(p => p.startsWith("."))) hidden++;
+        else items.push({ file, dirs: parts.slice(0, -1) });
+      }
+      folderPicker.value = "";
+      skipped(hidden);
+      upload(items);
+    });
+  }
 
   addEventListener("beforeunload", e => {
     if (active) e.preventDefault();
@@ -751,23 +1045,57 @@
   document.addEventListener("dragover", e => {
     if (carriesFiles(e)) e.preventDefault();
   });
-  document.addEventListener("drop", e => {
+  // Dropped folders are read entry by entry; the browser hands them out
+  // in batches.
+  const entriesOf = dir => new Promise(resolve => {
+    const reader = dir.createReader();
+    const all = [];
+    const next = () => reader.readEntries(batch => {
+      if (!batch.length) return resolve(all);
+      all.push(...batch);
+      next();
+    }, () => resolve(all));
+    next();
+  });
+  const fileOf = entry => new Promise(resolve => entry.file(resolve, () => resolve(null)));
+  // walk gathers the files and folders of the dropped entry, which is in
+  // the folders dirs of what was dropped, and counts the dotfiles left out.
+  const walk = async (entry, dirs, found) => {
+    if (entry.name.startsWith(".")) {
+      found.hidden++;
+    } else if (entry.isFile) {
+      const file = await fileOf(entry);
+      if (file) found.items.push({ file, dirs });
+    } else if (entry.isDirectory) {
+      const here = [...dirs, entry.name];
+      found.folders.push(here);
+      for (const e of await entriesOf(entry)) await walk(e, here, found);
+    }
+  };
+
+  document.addEventListener("drop", async e => {
     if (!carriesFiles(e)) return;
     e.preventDefault();
     depth = 0;
     overlay.hidden = true;
-    const files = [];
+    const found = { items: [], folders: [], hidden: 0 };
+    // The entries have to be taken before the event ends.
+    const entries = [];
     for (const item of e.dataTransfer.items) {
       const entry = item.webkitGetAsEntry && item.webkitGetAsEntry();
-      if (entry && entry.isDirectory) {
-        row(entry.name, "Folders cannot be uploaded; drop the files inside it.", "alert").r.classList.add("failed");
+      if (entry && entry.isDirectory && !folders) {
+        row(entry.name, "Folders cannot be uploaded here; drop the files inside it.", "alert").r.classList.add("failed");
         failed++;
         heading();
+      } else if (entry && entry.isDirectory) {
+        entries.push(entry);
       } else if (item.kind === "file") {
         const f = item.getAsFile();
-        if (f) files.push(f);
+        if (f) found.items.push({ file: f, dirs: [] });
       }
     }
-    upload(files);
+    for (const entry of entries) await walk(entry, [], found);
+    skipped(found.hidden);
+    upload(found.items, found.folders);
   });
 })();

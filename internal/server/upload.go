@@ -31,22 +31,32 @@ import (
 // uploadRights reports whether the visitor may create new files and replace
 // existing ones at obj.
 func (s *Server) uploadRights(c fiber.Ctx, obj string) (create, replace bool, err error) {
-	if create, err = s.allowed(c, obj, auth.ActWrite); err != nil {
-		return false, false, err
-	}
-	replace, err = s.allowed(c, obj, auth.ActOverwrite)
-	return create, replace, err
+	return uploadRightsOf(s.visitorRules(c), obj)
 }
 
 // uploadRightsAt narrows the upload rights at obj to those the visitor also
 // has at realObj, where symlinks lead (see resolve): a symlink grants
 // nothing its target's rules do not.
 func (s *Server) uploadRightsAt(c fiber.Ctx, obj, realObj string) (create, replace bool, err error) {
-	create, replace, err = s.uploadRights(c, obj)
+	return uploadRightsAtOf(s.visitorRules(c), obj, realObj)
+}
+
+// uploadRightsOf is uploadRights for the rules of allow.
+func uploadRightsOf(allow allowFunc, obj string) (create, replace bool, err error) {
+	if create, err = allow(obj, auth.ActWrite); err != nil {
+		return false, false, err
+	}
+	replace, err = allow(obj, auth.ActOverwrite)
+	return create, replace, err
+}
+
+// uploadRightsAtOf is uploadRightsAt for the rules of allow.
+func uploadRightsAtOf(allow allowFunc, obj, realObj string) (create, replace bool, err error) {
+	create, replace, err = uploadRightsOf(allow, obj)
 	if err != nil || obj == realObj || (!create && !replace) {
 		return create, replace, err
 	}
-	realCreate, realReplace, err := s.uploadRights(c, realObj)
+	realCreate, realReplace, err := uploadRightsOf(allow, realObj)
 	return create && realCreate, replace && realReplace, err
 }
 
@@ -127,7 +137,7 @@ func (s *Server) postForm(c fiber.Ctx) error {
 		return fiber.ErrForbidden
 	}
 	if c.Get("Tus-Resumable") != "" {
-		return s.createUpload(c, urlPath)
+		return s.createUpload(c, urlPath, nil)
 	}
 	switch mediaType, _, _ := mime.ParseMediaType(c.Get(fiber.HeaderContentType)); mediaType {
 	case fiber.MIMEApplicationForm, fiber.MIMEApplicationJSON:
@@ -214,6 +224,82 @@ func (s *Server) postForm(c fiber.Ctx) error {
 	return c.Redirect().Status(fiber.StatusSeeOther).To(escapePath(object(urlPath, true)) + "?uploaded=" + strconv.Itoa(len(stored)))
 }
 
+// linkUpload takes files sent through an upload link: a resumable upload
+// (tus), or the files of a form. They go into the link's folder; a name
+// taken there gets a number, as the sender cannot see what is there. Every
+// file counts as a use of the link.
+func (s *Server) linkUpload(c fiber.Ctx, tus bool) error {
+	sh, view, rel, _, err := s.share(c)
+	if err != nil || sh == nil {
+		return err
+	}
+	if !sh.Upload || rel != "/" {
+		return explain(fiber.ErrForbidden, "Files cannot be sent through this link.")
+	}
+	if !s.unlocked(c, sh, view) {
+		return explain(fiber.ErrForbidden, "This link needs its password: open it first.")
+	}
+	if tus {
+		return s.createUpload(c, sh.Path, sh)
+	}
+	_, params, err := mime.ParseMediaType(c.Get(fiber.HeaderContentType))
+	if err != nil || params["boundary"] == "" {
+		return fiber.ErrUnsupportedMediaType
+	}
+	dir, realDir, err := s.uploadDir(sh.Path)
+	if errors.Is(err, fiber.ErrNotFound) {
+		err = explain(fiber.ErrNotFound, deadLink)
+	}
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	allow := s.linkUploadRules(sh)
+	body := s.requestBody(c)
+	form := multipart.NewReader(body, params["boundary"])
+	var stored []string
+	for {
+		part, err := form.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return s.formError(c, stored, s.uploadError(body, fiber.ErrBadRequest))
+		}
+		name := part.FileName()
+		if part.FormName() != "file" || name == "" {
+			_ = part.Close()
+			continue
+		}
+		if !validName(name) {
+			return s.formError(c, stored, explain(fiber.ErrBadRequest, badName))
+		}
+		if create, _, err := uploadRightsAtOf(allow, path.Join(sh.Path, name), path.Join(realDir, name)); err != nil {
+			return s.formError(c, stored, err)
+		} else if !create {
+			return s.formError(c, stored, linkClosed())
+		}
+		if err := s.spendLink(c, sh); err != nil {
+			return s.formError(c, stored, err)
+		}
+		got, _, size, err := s.store(dir, name, part, false, uploadRights{create: true, rename: true}, s.copyUpload)
+		if err != nil {
+			return s.formError(c, stored, s.uploadError(body, err))
+		}
+		s.logUpload(c, path.Join(sh.Path, got), size, true)
+		stored = append(stored, name)
+		_ = part.Close()
+	}
+	if len(stored) == 0 {
+		return fiber.ErrBadRequest
+	}
+	s.finishBody(c, body)
+	if !strings.Contains(c.Get(fiber.HeaderAccept), fiber.MIMETextHTML) {
+		return c.SendStatus(fiber.StatusCreated)
+	}
+	return s.redirect(c, view.Root+"?uploaded="+strconv.Itoa(len(stored)))
+}
+
 // formError reports a failed form upload, naming the files that were
 // already stored before the failure.
 func (s *Server) formError(c fiber.Ctx, stored []string, err error) error {
@@ -253,45 +339,111 @@ func (s *Server) uploadDir(urlPath string) (*os.Root, string, error) {
 
 var errExists = errors.New("file exists")
 
-// uploadRights are the visitor's permissions for one upload target.
-type uploadRights struct{ create, replace bool }
+// uploadRights are the visitor's permissions for one upload target. With
+// rename, a file of that name stays, and the upload gets a free name like
+// it (see placeFree).
+type uploadRights struct{ create, replace, rename bool }
 
 // receive stores body as name in dir. The data goes to a hidden temp file
 // that is renamed into place once complete, so partial data never appears
 // under the real name; the lock file keeps concurrent uploads out. Without
 // replace, an existing name yields errExists.
 func (s *Server) receive(dir *os.Root, name string, body io.Reader, replace bool, rights uploadRights) (created bool, size int64, err error) {
+	_, created, size, err = s.store(dir, name, body, replace, rights, s.copyUpload)
+	return created, size, err
+}
+
+// store is receive with copy moving the data, which for uploads is limited
+// in size (copyUpload). It also returns the name the file got, which with
+// rights.rename may differ.
+func (s *Server) store(dir *os.Root, name string, body io.Reader, replace bool, rights uploadRights,
+	copy func(io.Writer, io.Reader) (int64, error)) (stored string, created bool, size int64, err error) {
 	tmp := tempPrefix + rand.Text() + tempSuffix
 	release, err := s.acquireLock(dir, name, tmp)
 	if err != nil {
-		return false, 0, err
+		return "", false, 0, err
 	}
 	defer func() {
 		_ = dir.Remove(tmp)
 		release()
 	}()
 
-	if created, err = checkTarget(dir, name, replace, rights); err != nil {
-		return false, 0, err
+	created = true
+	if !rights.rename {
+		if created, err = checkTarget(dir, name, replace, rights); err != nil {
+			return "", false, 0, err
+		}
+	} else if !rights.create {
+		return "", false, 0, fiber.ErrForbidden
 	}
 	f, err := dir.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
-		return false, 0, err
+		return "", false, 0, err
 	}
-	size, err = s.copyUpload(f, body)
+	size, err = copy(f, body)
 	if err == nil {
 		err = f.Sync()
 	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
-	if err == nil {
+	stored = name
+	switch {
+	case err != nil:
+	case rights.rename:
+		stored, err = s.placeFree(dir, tmp, name)
+	default:
 		err = place(dir, tmp, name, replace, rights)
 	}
 	if err != nil {
-		return false, size, err
+		return "", false, size, err
 	}
-	return created, size, nil
+	return stored, created, size, nil
+}
+
+// placeFree moves the complete temp file tmp in dir to name, which the
+// caller has locked, or if that is taken to the first free name like it:
+// "a (2).txt", "a (3).txt" and so on.
+func (s *Server) placeFree(dir *os.Root, tmp, name string) (string, error) {
+	for i := 1; i <= 100; i++ {
+		candidate := numbered(name, i)
+		if !validName(candidate) {
+			break
+		}
+		release := func() {}
+		if i > 1 {
+			var err error
+			if release, err = s.acquireLock(dir, candidate, tempPrefix+rand.Text()+tempSuffix); errors.Is(err, fiber.ErrConflict) {
+				continue
+			} else if err != nil {
+				return "", err
+			}
+		}
+		err := commit(dir, tmp, candidate, false)
+		release()
+		if errors.Is(err, errExists) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		syncDir(dir)
+		return candidate, nil
+	}
+	return "", errExists
+}
+
+// numbered is the ith name like name: name itself, then "a (2).txt" for
+// "a.txt", and so on.
+func numbered(name string, i int) string {
+	if i == 1 {
+		return name
+	}
+	ext := path.Ext(name)
+	if ext == name {
+		ext = ""
+	}
+	return strings.TrimSuffix(name, ext) + " (" + strconv.Itoa(i) + ")" + ext
 }
 
 // checkTarget reports whether storing name in dir would create it, or why

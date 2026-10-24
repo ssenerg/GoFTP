@@ -1,0 +1,77 @@
+{{define "trash"}}{{template "head" .}}
+<body>
+{{template "topbar" .}}
+<main class="container">
+  <div class="head">
+    <div>
+      <h1>Trash</h1>
+      <p class="summary">Deleted files and folders stay here for {{.Keep}}, then they are deleted for good.</p>
+    </div>
+    {{if .Purge}}
+    <div class="tools">
+      <details class="confirm">
+        <summary class="btn"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Empty trash</summary>
+        <form method="post" action="/.trash/" class="popover">
+          <input type="hidden" name="action" value="empty">
+          <p>Delete everything here for good? This cannot be undone.</p>
+          <div class="popover-actions"><button type="submit" class="btn danger small">Empty trash</button></div>
+        </form>
+      </details>
+    </div>
+    {{end}}
+  </div>
+
+  {{with .Notice}}<div class="alert success banner" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg><span>{{.}}</span></div>{{end}}
+  {{with .Error}}<div class="alert error banner" role="alert"><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>{{.}}</span></div>{{end}}
+
+  <div class="card">
+    {{if .Items}}
+    <table class="files list-table">
+      <thead><tr><th>Name</th><th class="num">Size</th><th>Deleted</th><th>Gone for good</th><th class="act"><span class="vh">Actions</span></th></tr></thead>
+      <tbody>
+        {{range .Items}}
+        <tr>
+          <td class="name"><span class="link-cell">
+            <span class="trash-name"><svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><span>{{.Name}}</span></span>
+            <span class="where">in <a href="{{.FolderHref}}">{{.Folder}}</a></span>
+          </span></td>
+          <td class="num">{{.Size}}</td>
+          <td><span class="cell-label">Deleted </span><time datetime="{{.DeletedISO}}">{{.Deleted}}</time><span class="faint"> by {{.By}}</span></td>
+          <td><span class="cell-label">Gone </span><time datetime="{{.GoneISO}}">{{.Gone}}</time></td>
+          <td class="act">
+            {{if .CanRestore}}
+            <form method="post" action="/.trash/" class="inline">
+              <input type="hidden" name="action" value="restore"><input type="hidden" name="id" value="{{.ID}}">
+              <button type="submit" class="btn small"><svg class="i" aria-hidden="true"><use href="#i-up"/></svg>Restore</button>
+            </form>
+            {{end}}
+            {{if .CanPurge}}
+            <details class="confirm">
+              <summary class="icon-btn" aria-label="Delete {{.Name}} for good" title="Delete for good"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg></summary>
+              <form method="post" action="/.trash/" class="popover">
+                <input type="hidden" name="action" value="purge"><input type="hidden" name="id" value="{{.ID}}">
+                <p>Delete <strong>{{.Name}}</strong> for good? This cannot be undone.</p>
+                <div class="popover-actions"><button type="submit" class="btn danger small">Delete for good</button></div>
+              </form>
+            </details>
+            {{end}}
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <div class="empty">
+      <svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>
+      <p>The trash is empty.</p>
+      <p>What you delete waits here for {{.Keep}}, so it can be restored.</p>
+    </div>
+    {{end}}
+  </div>
+</main>
+{{template "footer" .}}
+{{template "icons"}}
+{{script}}
+</body>
+</html>
+{{end}}

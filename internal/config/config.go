@@ -27,6 +27,7 @@ type Config struct {
 	Limiter  LimiterConfig  `mapstructure:"limiter"`
 	Upload   UploadConfig   `mapstructure:"upload"`
 	Cache    CacheConfig    `mapstructure:"cache"`
+	Trash    TrashConfig    `mapstructure:"trash"`
 }
 
 type DatabaseConfig struct {
@@ -75,6 +76,13 @@ type CacheConfig struct {
 	Dir string `mapstructure:"dir"`
 	// MaxSize bounds the cache; 0 disables it.
 	MaxSize ByteSize `mapstructure:"max_size"`
+}
+
+// TrashConfig keeps deleted files and folders for a while, so they can be
+// restored.
+type TrashConfig struct {
+	// Keep is how long; 0 deletes them at once, and empties the trash.
+	Keep time.Duration `mapstructure:"keep"`
 }
 
 // ByteSize is a size in bytes; config values may use units such as "10GiB".
@@ -186,6 +194,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("limiter.window", time.Minute)
 	v.SetDefault("upload.max_size", 0)
 	v.SetDefault("upload.resume_window", 24*time.Hour)
+	v.SetDefault("trash.keep", 30*24*time.Hour)
 	v.SetDefault("cache.dir", "")
 	v.SetDefault("cache.max_size", 512<<20)
 }
@@ -255,6 +264,9 @@ func (c *Config) normalize() error {
 	}
 	if c.Upload.ResumeWindow < time.Minute {
 		errs = append(errs, errors.New("upload.resume_window must be at least 1m"))
+	}
+	if c.Trash.Keep < 0 {
+		errs = append(errs, errors.New("trash.keep must not be negative"))
 	}
 	if c.Cache.MaxSize < 0 {
 		errs = append(errs, errors.New("cache.max_size must not be negative"))

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -56,6 +57,7 @@ type page struct {
 	Role      string
 	Admin     bool   // may administer users and rules
 	Shares    bool   // may share links, or administers them
+	Trash     bool   // may delete, so the trash is of use
 	Section   string // the top bar's tab for the page: "files", "shared" or ""
 	Here      string
 	MinLength int
@@ -73,10 +75,15 @@ func (s *Server) page(c fiber.Ctx, title string) page {
 		p.Role = s.auth.Role(u.Username)
 		p.Admin = s.auth.IsSuperadmin(u.Username)
 		p.Shares = p.Admin || s.auth.MayShare(u.Username)
+		p.Trash = s.cfg.Trash.Keep > 0 && (p.Admin || s.auth.MayDelete(u.Username))
 	}
 	switch {
 	case strings.HasPrefix(c.Path(), sharesPath):
 		p.Section = "shared"
+	case strings.HasPrefix(c.Path(), trashPath):
+		p.Section = "trash"
+	case strings.HasPrefix(c.Path(), searchPath):
+		p.Section = "files"
 	case !strings.HasPrefix(c.Path(), "/."):
 		p.Section = "files"
 	}
@@ -109,25 +116,49 @@ type listing struct {
 	Uploaded int
 	Created  *listItem
 	Renamed  *listItem
-	Deleted  bool
-	Manage   bool      // some entry may be renamed, deleted or shared
-	Selected *listItem // its forms are shown
+	Restored *listItem
+	Deleted  int  // entries just deleted
+	Trashed  bool // they went to the trash
+	Undo     *undo
+	Moved    *moved // entries just moved or copied elsewhere
+	// TrashKeep says how long deleted entries stay in the trash; "" if
+	// they are deleted at once.
+	TrashKeep string
+	// Copy is set when the visitor may add files somewhere, so copying
+	// entries elsewhere is of use.
+	Copy      bool
+	DeleteAny bool      // some entry may be deleted
+	Manage    bool      // some entry may be renamed, moved, copied, deleted or shared
+	Selected  *listItem // its forms are shown
 	// ShareHere is set when the visitor may share this folder.
 	ShareHere bool
+}
+
+// undo restores the one entry a deletion moved to the trash.
+type undo struct{ ID, Name string }
+
+// moved confirms that N entries were moved or copied to a folder.
+type moved struct {
+	Verb       string // Moved or Copied
+	N          int
+	Name, Href string // the folder
 }
 
 // itemForms is what the rename, share and delete forms of an entry show.
 type itemForms struct {
 	Action                         string
+	Folder                         string // URL path of the folder, ending in "/"
 	Name, Path                     string
 	IsDir                          bool
 	CanRename, CanDelete, CanShare bool
+	CanCopy                        bool
+	TrashKeep                      string
 }
 
 // Forms describes the forms for it; nil gives the blank ones the page's
 // script fills in.
 func (l listing) Forms(it *listItem) itemForms {
-	f := itemForms{Action: l.Action}
+	f := itemForms{Action: l.Action, Folder: object(l.Path, true), CanCopy: l.Copy, TrashKeep: l.TrashKeep}
 	if it != nil {
 		f.Name, f.Path, f.IsDir = it.Name, it.Path, it.IsDir
 		f.CanRename, f.CanDelete, f.CanShare = it.CanRename, it.CanDelete, it.CanShare
@@ -168,13 +199,14 @@ type listItem struct {
 }
 
 // ActionsLabel names what the visitor may do with the entry, for the
-// button of its menu: e.g. "Rename, share or delete a.txt".
-func (it listItem) ActionsLabel() string {
+// button of its menu: e.g. "Rename, share or delete a.txt". copy says
+// whether they may copy it elsewhere.
+func (it listItem) ActionsLabel(copy bool) string {
 	var acts []string
 	for _, a := range []struct {
 		ok   bool
 		name string
-	}{{it.CanRename, "rename"}, {it.CanShare, "share"}, {it.CanDelete, "delete"}} {
+	}{{it.CanRename, "rename"}, {it.CanDelete && copy, "move"}, {copy, "copy"}, {it.CanShare, "share"}, {it.CanDelete, "delete"}} {
 		if a.ok {
 			acts = append(acts, a.name)
 		}
@@ -187,6 +219,28 @@ func (it listItem) ActionsLabel() string {
 		label = strings.Join(acts[:n-1], ", ") + " or " + label
 	}
 	return strings.ToUpper(label[:1]) + label[1:] + " " + it.Name
+}
+
+// Folder is the listing's folder as a path to type, ending in "/".
+func (l listing) Folder() string { return object(l.Path, true) }
+
+// PickHint says what entries can be ticked for, e.g. "download, copy or
+// delete".
+func (l listing) PickHint() string {
+	acts := []string{"download"}
+	if l.Copy && l.DeleteAny {
+		acts = append(acts, "move")
+	}
+	if l.Copy {
+		acts = append(acts, "copy")
+	}
+	if l.DeleteAny {
+		acts = append(acts, "delete")
+	}
+	if n := len(acts); n > 1 {
+		return strings.Join(acts[:n-1], ", ") + " or " + acts[n-1]
+	}
+	return acts[0]
 }
 
 // SortHref links a column header: a second click reverses the order.
@@ -241,7 +295,10 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 			return err
 		}
 		data.Manage = data.Manage || item.CanDelete || item.CanShare
+		data.DeleteAny = data.DeleteAny || item.CanDelete
 	}
+	data.Copy = len(data.Items) > 0 && s.auth.MayWrite(visitorName(c))
+	data.Manage = data.Manage || data.Copy
 	if data.ShareHere, err = s.mayAt(c, auth.ActShare, urlPath, realPath, true); err != nil {
 		return err
 	}
@@ -257,7 +314,7 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 	}
 	// Only entries that are listed are confirmed, so links cannot be used to
 	// show made-up text.
-	created, renamed, selected := c.Query("created"), c.Query("renamed"), c.Query("item")
+	created, renamed, restored, selected := c.Query("created"), c.Query("renamed"), c.Query("restored"), c.Query("item")
 	for i := range data.Items {
 		switch it := &data.Items[i]; it.Name {
 		case created:
@@ -266,18 +323,81 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 			}
 		case renamed:
 			it.New, data.Renamed = true, it
+		case restored:
+			it.New, data.Restored = true, it
 		case selected:
-			if it.CanDelete || it.CanShare {
+			if it.CanDelete || it.CanShare || data.Copy {
 				it.Selected, data.Selected = true, it
 			}
 		}
 	}
-	data.Deleted = c.Query("deleted") == "1"
+	if s.cfg.Trash.Keep > 0 {
+		data.TrashKeep = keepText(s.cfg.Trash.Keep)
+	}
+	if err := s.deletedBanner(c, &data); err != nil {
+		return err
+	}
+	data.Moved = s.movedBanner(c)
 	if create || replace {
 		data.Upload = &uploadForm{Action: data.Action, Replace: replace}
 	}
 	data.Mkdir = create
 	return s.render(c, fiber.StatusOK, "listing", data)
+}
+
+// deletedBanner confirms a deletion (see deletedQuery). Undo is offered if
+// the visitor may restore what went to the trash.
+func (s *Server) deletedBanner(c fiber.Ctx, data *listing) error {
+	n, err := strconv.Atoi(c.Query("deleted"))
+	if err != nil || n <= 0 {
+		return nil
+	}
+	data.Deleted, data.Trashed = n, c.Query("trashed") == "1"
+	id := c.Query("undo")
+	if id == "" || n != 1 {
+		return nil
+	}
+	data.Trashed = true
+	trash, box, note, _, err := s.trashEntry(id)
+	if errors.Is(err, fiber.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_ = box.Close()
+	_ = trash.Close()
+	if ok, _, err := mayRestore(s.visitorRules(c), note); err != nil || !ok {
+		return err
+	}
+	data.Undo = &undo{ID: id, Name: path.Base(note.Path)}
+	return nil
+}
+
+// movedBanner confirms entries moved or copied to another folder (see
+// relocate), if the visitor may open that folder: links cannot make it
+// name folders that are not there.
+func (s *Server) movedBanner(c fiber.Ctx) *moved {
+	m := &moved{Verb: "Moved"}
+	n, err := strconv.Atoi(c.Query("moved"))
+	if err != nil {
+		m.Verb = "Copied"
+		n, err = strconv.Atoi(c.Query("copied"))
+	}
+	dest, ok := formPath(c.Query("to"))
+	if err != nil || n <= 0 || !ok || hidden(dest) {
+		return nil
+	}
+	f, info, _, err := s.lookup(dest, s.visitorRules(c))
+	if err != nil {
+		return nil
+	}
+	_ = f.Close()
+	if !info.IsDir() {
+		return nil
+	}
+	m.N, m.Name, m.Href = n, dest, escapePath(object(dest, true))
+	return m
 }
 
 // folderItems lists the entries of the folder dir at urlPath, which really

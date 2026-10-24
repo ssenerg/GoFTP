@@ -56,7 +56,7 @@ func TestConcurrentMigrations(t *testing.T) {
 	if err := pools[0].QueryRow(ctx, "SELECT count(*) FROM casbin_rule").Scan(&rules); err != nil {
 		t.Fatal(err)
 	}
-	if versions != 4 || rules != 9 {
+	if versions != 5 || rules != 9 {
 		t.Errorf("%d migrations recorded, %d rules seeded", versions, rules)
 	}
 }

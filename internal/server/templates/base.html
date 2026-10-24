@@ -223,7 +223,7 @@
   .btn.small { height: 32px; padding: 0 12px; font-size: 13px; }
   .field { display: flex; flex-direction: column; gap: 6px; }
   .field > span:first-child { font-size: 13px; font-weight: 600; color: var(--muted); }
-  input[type=text], input[type=search], input[type=password], input:not([type]) {
+  input[type=text], input[type=search], input[type=password], input[type=number], input:not([type]) {
     width: 100%;
     height: 42px;
     padding: 0 12px;
@@ -306,8 +306,17 @@
     font: 12px/18px ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   .search input:focus + kbd, .search input:not(:placeholder-shown) + kbd { display: none; }
+  .search-form { display: flex; flex-wrap: wrap; gap: 10px; margin: 0; }
+  .head + .search-form { margin-bottom: 16px; }
+  .search.wide { flex: 1 1 280px; width: auto; }
+  .search.wide input { padding-right: 12px; }
+  .alert.note { background: var(--accent-soft); color: var(--text); }
+  .files .where-col { color: var(--muted); font-size: 13.5px; overflow-wrap: anywhere; }
+  .files .where-col a { color: inherit; }
+  .files .where-col a:hover { color: var(--accent); }
   .banner { margin-bottom: 16px; }
-  .banner a { color: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+  .banner a, .banner .linkish { color: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+  .banner form { margin: 0 0 0 auto; }
   .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
   .tools .btn { height: 40px; }
   .newfolder { position: relative; }
@@ -332,8 +341,39 @@
   .popover.start { left: 0; right: auto; }
   .popover input { height: 38px; }
   .popover-error { color: var(--danger); font-size: 13px; }
-  .popover-actions { display: flex; justify-content: flex-end; }
-  .files tbody tr.new td, .files tbody tr.selected td { background: var(--accent-soft); }
+  .popover-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .files tbody tr.new td, .files tbody tr.selected td, .files tbody tr.ticked td { background: var(--accent-soft); }
+  .files th.pick, .files td.pick { width: 44px; padding: 0 0 0 16px; }
+  .files td.pick input, .files th.pick input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); vertical-align: middle; }
+  .picked {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 16px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .picked.live {
+    position: sticky;
+    bottom: 12px;
+    z-index: 10;
+    margin: 0 8px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: var(--shadow-lg);
+    color: var(--text);
+    font-weight: 600;
+  }
+  .picked-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .picked-pop { position: relative; }
+  .picked-pop > summary { list-style: none; -webkit-tap-highlight-color: transparent; }
+  .picked-pop > summary::-webkit-details-marker { display: none; }
+  .picked-pop[open] > summary { background: var(--hover); }
+  .picked-pop .popover { top: auto; bottom: calc(100% + 8px); font-weight: 400; }
   .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .files th.act, .files td.act { width: 52px; padding: 0 10px; text-align: right; }
   .files td.act { position: relative; }
@@ -355,7 +395,12 @@
   .delete-note { color: var(--muted); font-size: 13px; }
   .form-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--muted); }
   .share-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 10px; }
-  .share-row select { height: 38px; width: 100%; }
+  .share-row select, .share-kind select { height: 38px; width: 100%; }
+  .share-limit input { width: calc(40% - 4px); }
+  .share-card.dropbox { align-items: stretch; }
+  .dropbox > .share-icon { align-self: center; }
+  .dropbox .upload, .dropbox .transfers { margin: 8px 0 0; text-align: left; }
+  .dropbox .alert { text-align: left; }
   .field .opt { font-weight: 400; color: var(--faint); }
   .share-result { display: flex; flex-direction: column; gap: 10px; }
   .share-result .form-title { color: var(--success); }
@@ -377,6 +422,9 @@
   .link-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .link-cell a { display: inline-flex; align-items: center; gap: 10px; color: var(--text); font-weight: 500; overflow-wrap: anywhere; }
   .link-cell .where { color: var(--faint); font-size: 12.5px; padding-left: 30px; overflow-wrap: anywhere; }
+  .files td.name .where a { display: inline; color: var(--muted); font-weight: 400; }
+  .trash-name { display: inline-flex; align-items: center; gap: 10px; font-weight: 500; overflow-wrap: anywhere; }
+  form.inline { display: inline-block; margin: 0 4px 0 0; vertical-align: middle; }
   .thumb-box { position: relative; display: inline-grid; place-items: center; flex: none; width: 22px; height: 22px; }
   .thumb { position: absolute; top: 50%; left: 50%; width: 30px; height: 30px; transform: translate(-50%, -50%); object-fit: cover; border-radius: 6px; background: var(--surface); }
   .stage { display: grid; place-items: center; min-height: 240px; padding: 12px; background: var(--surface-2); overflow: hidden; }
@@ -461,6 +509,7 @@
   .dz-icon { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); flex: none; }
   .dz-text strong { color: var(--text); font-weight: 600; }
   .dz-hint { font-size: 13px; color: var(--faint); }
+  .dz-folder { position: relative; z-index: 1; margin-left: auto; }
   .upload-options { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
   .check { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; cursor: pointer; }
   .check input { width: 16px; height: 16px; accent-color: var(--accent); }
@@ -578,7 +627,7 @@
     .touch { display: block; }
   }
   @media (max-width: 720px) {
-    .files .date { display: none; }
+    .files .date, .files .where-col { display: none; }
     /* Each user or rule becomes a block: who on top, the rest below. */
     .list-table thead { display: none; }
     .list-table tbody tr { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
@@ -607,6 +656,7 @@
     .head h1 { font-size: 22px; }
     .tools, .search { width: 100%; }
     .search { flex: 1; width: auto; }
+    .tools .search-form { flex: 1 1 100%; }
     .files th, .files td { padding: 0 12px; }
     .files .num { width: auto; }
     .dz-hint { display: none; }
@@ -620,10 +670,11 @@
 <header class="topbar">
   <div class="topbar-start">
     <a class="brand" href="{{with .Share}}{{.Root}}{{else}}/{{end}}"><svg class="logo" aria-hidden="true"><use href="#i-logo"/></svg>goftp</a>
-    {{if and .User .Shares (not .Shared)}}
+    {{if and .User (or .Shares .Trash) (not .Shared)}}
     <nav class="sections" aria-label="Sections">
       <a href="/"{{if eq .Section "files"}} aria-current="true"{{end}}><svg class="i" aria-hidden="true"><use href="#i-folder"/></svg>Files</a>
-      <a href="/.shares/"{{if eq .Section "shared"}} aria-current="page"{{end}}><svg class="i" aria-hidden="true"><use href="#i-link"/></svg>Shared</a>
+      {{if .Shares}}<a href="/.shares/"{{if eq .Section "shared"}} aria-current="page"{{end}}><svg class="i" aria-hidden="true"><use href="#i-link"/></svg>Shared</a>{{end}}
+      {{if .Trash}}<a href="/.trash/"{{if eq .Section "trash"}} aria-current="page"{{end}}><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Trash</a>{{end}}
     </nav>
     {{end}}
   </div>

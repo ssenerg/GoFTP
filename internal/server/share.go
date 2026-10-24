@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"mime"
 	"os"
 	"path"
 	"path/filepath"
@@ -30,6 +31,7 @@ const (
 	shareGuessesPerMinute = 20
 
 	deadLink = "This link has expired or was revoked, or what it shared was moved or deleted. Ask whoever sent it for a new one."
+	usedUp   = "This link was used as often as it may be. Ask whoever sent it for a new one."
 )
 
 // shareTTL is a lifetime a link can be given.
@@ -68,9 +70,18 @@ type shareFile struct {
 
 type sharePage struct {
 	page
-	Locked bool // the link needs its password
-	Error  string
-	File   *shareFile
+	Locked  bool // the link needs its password
+	Error   string
+	File    *shareFile
+	Dropbox *dropbox
+}
+
+// dropbox is the page of an upload link.
+type dropbox struct {
+	Name     string // of the folder
+	Action   string // where uploads go
+	Uploaded int    // files just sent
+	Left     int    // files that may still be sent, if limited
 }
 
 // shared serves what a link leads to, to anyone with the link (and its
@@ -83,6 +94,10 @@ func (s *Server) shared(c fiber.Ctx) error {
 	}
 	if !s.unlocked(c, sh, view) {
 		return s.askPassword(c, view, "", fiber.StatusOK)
+	}
+	s.touchLink(c, sh)
+	if sh.Upload {
+		return s.serveDropbox(c, sh, view, rel)
 	}
 	allow := s.shareRules(sh)
 	// The link works while its creator may read and share what it leads
@@ -108,6 +123,10 @@ func (s *Server) shared(c fiber.Ctx) error {
 				_ = f.Close()
 				return s.redirect(c, view.Root)
 			}
+			if err := s.useLink(c, sh); err != nil {
+				_ = f.Close()
+				return err
+			}
 			return s.serveFileAs(c, f, info, sh.Path, realPath, fileAt{base: view.base, rel: rel, allow: allow})
 		case "/":
 			_, preview := inlineType(f, name)
@@ -131,6 +150,10 @@ func (s *Server) shared(c fiber.Ctx) error {
 		}
 	}
 	if !info.IsDir() {
+		if err := s.useLink(c, sh); err != nil {
+			_ = f.Close()
+			return err
+		}
 		// The file is closed once it is sent.
 		return s.serveFileAs(c, f, info, urlPath, realPath, fileAt{
 			base: view.base, rel: rel, page: func(title string) page { return s.sharePage(c, view, title) }, allow: allow,
@@ -142,6 +165,9 @@ func (s *Server) shared(c fiber.Ctx) error {
 		return c.Redirect().Status(fiber.StatusMovedPermanently).To(escapePath(view.base + rel + "/"))
 	}
 	if c.Request().URI().QueryArgs().Has("zip") {
+		if err := s.useLink(c, sh); err != nil {
+			return err
+		}
 		return s.serveZip(c, urlPath, realPath, zipName(urlPath), allow)
 	}
 	return s.serveSharedDir(c, f, view, urlPath, realPath, rel, allow)
@@ -175,15 +201,67 @@ func (s *Server) share(c fiber.Ctx) (*auth.Share, *shareView, string, bool, erro
 		Expires: sh.ExpiresAt.UTC().Format("Jan 2, 2006 15:04") + " UTC", ExpiresISO: sh.ExpiresAt.UTC().Format(time.RFC3339)}
 	// Error pages offer the way back to the link's root.
 	c.Locals(shareKey, view)
+	if sh.UsedUp() {
+		c.Locals(shareKey, nil)
+		return nil, nil, "", false, explain(fiber.ErrGone, usedUp)
+	}
 	if hidden(rel) {
 		return nil, nil, "", false, fiber.ErrNotFound
 	}
 	return sh, view, rel, wantDir, nil
 }
 
+// useLink counts a download through the link sh, if the request is one: of
+// a file's content from its start, or of a zip. Showing a file in the
+// browser is not, so the link's own page does not use it up. A link used
+// as often as it may be is refused from then on.
+func (s *Server) useLink(c fiber.Ctx, sh *auth.Share) error {
+	q := c.Request().URI().QueryArgs()
+	if c.Method() == fiber.MethodHead || q.Has("thumb") || q.Has("inline") {
+		return nil
+	}
+	if r := strings.TrimSpace(c.Get(fiber.HeaderRange)); r != "" && !strings.HasPrefix(r, "bytes=0-") {
+		return nil
+	}
+	return s.spendLink(c, sh)
+}
+
+// spendLink counts a use of the link sh: a download, or a file sent. A
+// link used as often as it may be is refused.
+func (s *Server) spendLink(c fiber.Ctx, sh *auth.Share) error {
+	ctx, cancel := dbContext(c)
+	defer cancel()
+	ok, err := s.auth.UseShare(ctx, sh)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return explain(fiber.ErrGone, usedUp)
+	}
+	return nil
+}
+
+// touchLink notes that the link sh was opened, for its creator to see; at
+// most once a minute.
+func (s *Server) touchLink(c fiber.Ctx, sh *auth.Share) {
+	now := time.Now()
+	if last, ok := s.touched.Load(sh.ID); ok && now.Sub(last.(time.Time)) < time.Minute {
+		return
+	}
+	s.touched.Store(sh.ID, now)
+	ctx, cancel := dbContext(c)
+	defer cancel()
+	if err := s.auth.TouchShare(ctx, sh); err != nil {
+		s.log.Warn("note link use", zap.Int64("share", sh.ID), zap.Error(err))
+	}
+}
+
 // shareRules let a link's visitors read what its creator may read and
-// share, and nothing else.
+// share, and nothing else. Upload links let them read nothing.
 func (s *Server) shareRules(sh *auth.Share) allowFunc {
+	if sh.Upload {
+		return func(string, string) (bool, error) { return false, nil }
+	}
 	allow := s.rulesOf(&auth.User{ID: sh.CreatedBy, Username: sh.Creator})
 	return func(obj, act string) (bool, error) {
 		if act != auth.ActRead {
@@ -195,6 +273,68 @@ func (s *Server) shareRules(sh *auth.Share) allowFunc {
 		}
 		return ok, err
 	}
+}
+
+// linkUploadRules let the visitors of the upload link sh add files, while
+// its creator may add them there and share the folder they go to, and do
+// nothing else: not even see what is there. The link's handlers only add
+// files to its folder.
+func (s *Server) linkUploadRules(sh *auth.Share) allowFunc {
+	allow := s.rulesOf(&auth.User{ID: sh.CreatedBy, Username: sh.Creator})
+	return func(obj, act string) (bool, error) {
+		if act != auth.ActWrite || strings.HasSuffix(obj, "/") {
+			return false, nil
+		}
+		ok, err := allow(obj, auth.ActWrite)
+		if err == nil && ok {
+			ok, err = allow(object(path.Dir(obj), true), auth.ActShare)
+		}
+		return ok, err
+	}
+}
+
+// serveDropbox shows the page of the upload link sh: a form to send files
+// to its folder, and nothing of what is there.
+func (s *Server) serveDropbox(c fiber.Ctx, sh *auth.Share, view *shareView, rel string) error {
+	if rel != "/" {
+		return fiber.ErrNotFound
+	}
+	// The link works while its creator may add files to its folder.
+	if ok, err := s.linkUploadRules(sh)(path.Join(sh.Path, "x"), auth.ActWrite); err != nil {
+		return err
+	} else if !ok {
+		c.Locals(shareKey, nil)
+		return explain(fiber.ErrNotFound, deadLink)
+	}
+	dir, _, err := s.uploadDir(sh.Path)
+	if err != nil {
+		c.Locals(shareKey, nil)
+		if errors.Is(err, fiber.ErrNotFound) {
+			err = explain(fiber.ErrNotFound, deadLink)
+		}
+		return err
+	}
+	_ = dir.Close()
+	box := &dropbox{Name: shareName(sh.Path), Action: view.Root}
+	if n, err := strconv.Atoi(c.Query("uploaded")); err == nil && n > 0 {
+		box.Uploaded = n
+	}
+	if sh.MaxUses > 0 {
+		box.Left = sh.MaxUses - sh.Uses
+	}
+	return s.render(c, fiber.StatusOK, "share", sharePage{page: s.sharePage(c, view, "Send files to "+box.Name), Dropbox: box})
+}
+
+// sharePost takes what is posted to a link: its password, or files sent
+// through an upload link, resumably (tus) or as a form.
+func (s *Server) sharePost(c fiber.Ctx) error {
+	if c.Get("Tus-Resumable") != "" {
+		return s.linkUpload(c, true)
+	}
+	if mediaType, _, _ := mime.ParseMediaType(c.Get(fiber.HeaderContentType)); mediaType == "multipart/form-data" {
+		return s.linkUpload(c, false)
+	}
+	return s.unlockShare(c)
 }
 
 // sharePage is what pages reached through the link of view show: nothing
@@ -217,7 +357,7 @@ func (s *Server) serveSharedDir(c fiber.Ctx, dir *os.File, view *shareView, urlP
 			it.Href += "/"
 		}
 	}
-	data := listing{page: s.sharePage(c, view, shareName(urlPath)), Path: rel, Home: view.Root,
+	data := listing{page: s.sharePage(c, view, shareName(urlPath)), Path: rel, Home: view.Root, Action: escapePath(view.base + object(rel, true)),
 		Crumbs: crumbs(view.base, rel), Items: items, Summary: summaryOf(items)}
 	if rel != "/" {
 		data.Title = path.Base(rel)
@@ -346,19 +486,42 @@ type sharesData struct {
 }
 
 type sharedLink struct {
-	ID                  int64
-	Name, Path, Href    string
-	Kind                string
-	By                  string
-	Password            bool
-	Expires, ExpiresISO string
+	ID                    int64
+	Name, Path, Href      string
+	Kind                  string
+	By                    string
+	Password              bool
+	Upload                bool
+	Uses                  string // e.g. "3 of 10 downloads"
+	UsedUp                bool
+	LastUsed, LastUsedISO string // "" if never
+	Expires, ExpiresISO   string
 }
 
 // createdLink is a new link, shown once.
 type createdLink struct {
 	URL, Name           string
 	Password            bool
+	Upload              bool
+	MaxUses             string // e.g. "10 downloads"; "" if not limited
 	Expires, ExpiresISO string
+}
+
+// useCount says how often a link was used, e.g. "3 of 10 downloads" or
+// "1 file".
+func useCount(sh *auth.Share) string {
+	if sh.MaxUses > 0 {
+		return strconv.Itoa(sh.Uses) + " of " + plural(sh.MaxUses, useNoun(sh))
+	}
+	return plural(sh.Uses, useNoun(sh))
+}
+
+// useNoun names what counts as a use of a link.
+func useNoun(sh *auth.Share) string {
+	if sh.Upload {
+		return "file"
+	}
+	return "download"
 }
 
 var shareNotices = map[string]string{"revoked": "The link was revoked. It no longer works."}
@@ -382,10 +545,15 @@ func (s *Server) renderShares(c fiber.Ctx, status int, notice, failure string, c
 	data := sharesData{page: s.page(c, "Shared links"), All: all, Created: created, Notice: notice, Error: failure}
 	for _, sh := range shares {
 		l := sharedLink{ID: sh.ID, Name: shareName(sh.Path), Path: sh.Path, Href: escapePath(object(sh.Path, sh.IsDir)),
-			Kind: kindOf(sh.Path), By: sh.Creator, Password: sh.PasswordHash != "",
-			Expires: sh.ExpiresAt.UTC().Format("Jan 2, 2006 15:04") + " UTC", ExpiresISO: sh.ExpiresAt.UTC().Format(time.RFC3339)}
+			Kind: kindOf(sh.Path), By: sh.Creator, Password: sh.PasswordHash != "", Upload: sh.Upload, Uses: useCount(&sh),
+			UsedUp: sh.UsedUp(), Expires: sh.ExpiresAt.UTC().Format("Jan 2, 2006 15:04") + " UTC",
+			ExpiresISO: sh.ExpiresAt.UTC().Format(time.RFC3339)}
 		if sh.IsDir {
 			l.Kind = "folder"
+		}
+		if !sh.LastUsedAt.IsZero() {
+			l.LastUsed = sh.LastUsedAt.UTC().Format("Jan 2, 2006 15:04") + " UTC"
+			l.LastUsedISO = sh.LastUsedAt.UTC().Format(time.RFC3339)
 		}
 		data.Links = append(data.Links, l)
 	}
@@ -394,8 +562,13 @@ func (s *Server) renderShares(c fiber.Ctx, status int, notice, failure string, c
 
 // sharesAction creates and revokes links:
 //
-//	action=create&path=PATH&expires=7d[&password=PW]  a link to the file or folder at PATH
-//	action=revoke&id=ID                               ends the link ID
+//	action=create&path=PATH&expires=7d  a link to the file or folder at
+//	                                    PATH, which may also have
+//	                                    password=PW, kind=upload to let
+//	                                    people upload into the folder
+//	                                    instead, and max_uses=N to stop it
+//	                                    after N downloads or files sent
+//	action=revoke&id=ID                 ends the link ID
 //
 // e.g. curl -d action=create -d path=/docs/report.pdf -d expires=1d https://host/.shares/
 func (s *Server) sharesAction(c fiber.Ctx) error {
@@ -429,6 +602,21 @@ func (s *Server) createShare(c fiber.Ctx, u *auth.User, form map[string]string) 
 	if ttl == 0 {
 		return explain(fiber.ErrBadRequest, "Choose when the link expires: 1h, 1d, 7d or 30d.")
 	}
+	opts := auth.ShareOptions{TTL: ttl, Password: form["password"]}
+	switch form["kind"] {
+	case "", "read":
+	case "upload":
+		opts.Upload = true
+	default:
+		return explain(fiber.ErrBadRequest, "A link lets people read (kind=read) or upload (kind=upload).")
+	}
+	if v := strings.TrimSpace(form["max_uses"]); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 || n > auth.MaxShareUses {
+			return explain(fiber.ErrBadRequest, "Limit the uses of a link to a number up to "+strconv.Itoa(auth.MaxShareUses)+", or not at all.")
+		}
+		opts.MaxUses = n
+	}
 	urlPath, ok := formPath(form["path"])
 	if !ok {
 		return fiber.ErrBadRequest
@@ -453,11 +641,24 @@ func (s *Server) createShare(c fiber.Ctx, u *auth.User, form map[string]string) 
 	} else if !ok {
 		return fiber.ErrNotFound
 	}
+	if opts.Upload {
+		if !info.IsDir() {
+			return explain(fiber.ErrBadRequest, "Upload links lead to folders.")
+		}
+		// It lets people add files, which its creator has to be allowed.
+		if ok, err := s.mayAt(c, auth.ActWrite, urlPath, realPath, true); err != nil {
+			return err
+		} else if !ok {
+			return explain(fiber.ErrForbidden, "You may not add files here, so you cannot let others do it.")
+		}
+	}
 
 	ctx, cancel := dbContext(c)
 	defer cancel()
-	token, sh, err := s.auth.CreateShare(ctx, u, urlPath, info.IsDir(), ttl, form["password"])
+	token, sh, err := s.auth.CreateShare(ctx, u, urlPath, info.IsDir(), opts)
 	switch {
+	case errors.Is(err, auth.ErrInvalid):
+		return fiber.ErrBadRequest
 	case errors.Is(err, auth.ErrWeakPassword):
 		return explain(fiber.ErrBadRequest, "Give the link a password of at least "+strconv.Itoa(auth.MinSharePasswordLength)+" characters, or none.")
 	case errors.Is(err, auth.ErrTooMany):
@@ -469,16 +670,22 @@ func (s *Server) createShare(c fiber.Ctx, u *auth.User, form map[string]string) 
 		return err
 	}
 	s.log.Info("share created", zap.String("ip", c.IP()), zap.String("user", u.Username), zap.String("path", urlPath),
-		zap.Int64("share", sh.ID), zap.Time("expires", sh.ExpiresAt), zap.Bool("password", sh.PasswordHash != ""))
+		zap.Int64("share", sh.ID), zap.Time("expires", sh.ExpiresAt), zap.Bool("password", sh.PasswordHash != ""),
+		zap.Bool("upload", sh.Upload), zap.Int("max_uses", sh.MaxUses))
 
 	link := c.BaseURL() + sharePrefix + token + "/"
 	expires := sh.ExpiresAt.UTC()
 	c.Set(fiber.HeaderCacheControl, "no-store")
 	if !strings.Contains(c.Get(fiber.HeaderAccept), fiber.MIMETextHTML) {
-		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"id": sh.ID, "url": link, "expires_at": expires.Format(time.RFC3339)})
+		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"id": sh.ID, "url": link, "expires_at": expires.Format(time.RFC3339),
+			"upload": sh.Upload, "max_uses": sh.MaxUses})
 	}
-	return s.renderShares(c, fiber.StatusCreated, "", "", &createdLink{URL: link, Name: shareName(urlPath), Password: sh.PasswordHash != "",
-		Expires: expires.Format("Jan 2, 2006 15:04") + " UTC", ExpiresISO: expires.Format(time.RFC3339)})
+	created := &createdLink{URL: link, Name: shareName(urlPath), Password: sh.PasswordHash != "", Upload: sh.Upload,
+		Expires: expires.Format("Jan 2, 2006 15:04") + " UTC", ExpiresISO: expires.Format(time.RFC3339)}
+	if sh.MaxUses > 0 {
+		created.MaxUses = plural(sh.MaxUses, useNoun(sh))
+	}
+	return s.renderShares(c, fiber.StatusCreated, "", "", created)
 }
 
 // revokeShare ends a link: users can end their own, superadmins anyone's.

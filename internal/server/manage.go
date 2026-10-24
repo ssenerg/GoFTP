@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -32,17 +33,29 @@ func (e *explained) Unwrap() error                  { return e.err }
 // manage handles a folder's small forms, sent URL-encoded or as JSON:
 //
 //	folder=NAME         creates the folder NAME
-//	delete=NAME         deletes the entry NAME, a folder with everything in it
+//	delete=NAME         moves the entry NAME to the trash, or with
+//	                    permanent=1 deletes it for good: a folder with
+//	                    everything in it
 //	rename=NAME&to=NEW  renames the entry NAME to NEW
+//	move=NAME&into=DIR  moves the entry NAME into the folder at the URL
+//	                    path DIR
+//	copy=NAME&into=DIR  copies it there
+//
+// delete, move and copy may name several entries, which are handled in
+// turn. Forms that pick entries with checkboxes send them as pick=NAME,
+// and what to do with them as op=delete, op=move or op=copy.
 //
 // e.g. curl -d rename=a.txt -d to=b.txt https://host/dir/
 func (s *Server) manage(c fiber.Ctx, urlPath string) error {
 	// Visitors who may change nothing here are refused before the body is
-	// read.
+	// read; copying from here needs the right to add files elsewhere.
 	dir := object(urlPath, true)
 	ok, err := s.allowed(c, dir, auth.ActWrite)
 	if err == nil && !ok {
 		ok, err = s.allowed(c, dir, auth.ActDelete)
+	}
+	if err == nil && !ok && s.auth.MayWrite(visitorName(c)) {
+		ok, err = s.allowed(c, dir, auth.ActRead)
 	}
 	if err != nil {
 		return err
@@ -50,26 +63,90 @@ func (s *Server) manage(c fiber.Ctx, urlPath string) error {
 	if !ok {
 		return s.deny(c)
 	}
-	form, _, err := s.readForm(c)
+	values, _, err := s.readFormValues(c)
 	if err != nil {
 		return err
 	}
-	if name, ok := form["folder"]; ok {
-		return s.mkdir(c, urlPath, name)
-	}
-	if name, ok := form["delete"]; ok {
-		if err := s.remove(c, urlPath, name); err != nil {
-			return err
+	if op := values.Get("op"); op != "" {
+		if !slices.Contains([]string{"delete", "move", "copy"}, op) {
+			return fiber.ErrBadRequest
 		}
-		return s.done(c, urlPath, fiber.StatusNoContent, "", "deleted=1")
+		if len(values["pick"]) == 0 {
+			return explain(fiber.ErrBadRequest, "Pick what to "+op+" first.")
+		}
+		values[op] = values["pick"]
 	}
-	if name, ok := form["rename"]; ok {
-		return s.rename(c, urlPath, name, form["to"])
+	if names, ok := values["folder"]; ok {
+		return s.mkdir(c, urlPath, names[0])
+	}
+	if names, ok := values["delete"]; ok {
+		return s.removeEntries(c, urlPath, names, yes(values.Get("permanent")))
+	}
+	if names, ok := values["rename"]; ok {
+		return s.rename(c, urlPath, names[0], values.Get("to"))
+	}
+	if names, ok := values["move"]; ok {
+		return s.relocate(c, urlPath, names, values.Get("into"), false)
+	}
+	if names, ok := values["copy"]; ok {
+		return s.relocate(c, urlPath, names, values.Get("into"), true)
 	}
 	return fiber.ErrBadRequest
 }
 
+// yes reports whether a form's checkbox or flag is set.
+func yes(v string) bool { return slices.Contains([]string{"1", "on", "true"}, v) }
+
+// removeEntries deletes the entries names of the folder at dirPath in turn
+// (see remove), and stops at the first that fails.
+func (s *Server) removeEntries(c fiber.Ctx, dirPath string, names []string, permanent bool) error {
+	var done, ids []string
+	for _, name := range unique(names) {
+		id, err := s.remove(c, dirPath, name, permanent)
+		if id != "" {
+			ids = append(ids, id)
+		}
+		if len(ids) > 0 {
+			c.Set(trashIDsHeader, trashIDs(ids))
+		}
+		if err != nil {
+			return s.partialError(c, "Deleted", done, err)
+		}
+		done = append(done, name)
+	}
+	return s.done(c, dirPath, fiber.StatusNoContent, "", deletedQuery(len(done), ids))
+}
+
+// unique drops repeated names, keeping the order.
+func unique(names []string) []string {
+	seen := make(map[string]bool, len(names))
+	out := names[:0:0]
+	for _, n := range names {
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// partialError reports a change of several entries that failed, naming
+// those already done before the failure, e.g. "Deleted before the error:
+// a.txt, b.txt", after the explanation of err, if it has one.
+func (s *Server) partialError(c fiber.Ctx, did string, done []string, err error) error {
+	if len(done) == 0 {
+		return err
+	}
+	detail := did + " before the error: " + strings.Join(done, ", ") + "."
+	var ex *explained
+	if errors.As(err, &ex) {
+		detail = ex.detail + " " + detail
+	}
+	return s.sendError(c, err, detail)
+}
+
 // deleteEntry handles DELETE requests, e.g. curl -X DELETE https://host/dir/a.txt
+// The entry goes to the trash, or with ?permanent is deleted for good.
 func (s *Server) deleteEntry(c fiber.Ctx) error {
 	urlPath, _, err := cleanPath(c.Path())
 	if err != nil {
@@ -79,8 +156,12 @@ func (s *Server) deleteEntry(c fiber.Ctx) error {
 		return fiber.ErrForbidden
 	}
 	dirPath, name := path.Split(urlPath)
-	if err := s.remove(c, dirPath, name); err != nil {
+	id, err := s.remove(c, dirPath, name, c.Request().URI().QueryArgs().Has("permanent"))
+	if err != nil {
 		return err
+	}
+	if id != "" {
+		c.Set(trashIDsHeader, id)
 	}
 	return c.SendStatus(fiber.StatusNoContent)
 }
@@ -104,52 +185,73 @@ var (
 )
 
 // remove deletes the entry name of the folder at dirPath: a file, a symlink
-// (not what it leads to), or a folder with everything in it.
-func (s *Server) remove(c fiber.Ctx, dirPath, name string) error {
+// (not what it leads to), or a folder with everything in it. It goes to the
+// trash, unless that is off or permanent is set; then the ID it got there
+// is returned.
+func (s *Server) remove(c fiber.Ctx, dirPath, name string, permanent bool) (string, error) {
 	dir, realDir, info, err := s.entry(c, dirPath, name, auth.ActDelete)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer dir.Close()
 	// The lock keeps uploads of the name out meanwhile.
 	release, err := s.acquireLock(dir, name, tempPrefix+rand.Text()+tempSuffix)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer release()
 
 	target := path.Join(dirPath, name)
 	contents := 0
 	if info.IsDir() {
-		contents, err = s.checkTree(c, dir, name, target, path.Join(realDir, name))
-		switch {
-		case errors.Is(err, errDenied):
-			return explain(fiber.ErrForbidden, "You may not delete everything in this folder.")
-		case errors.Is(err, errBusy):
-			return explain(fiber.ErrConflict, "Something in this folder is being uploaded or written right now.")
-		case errors.Is(err, errMounted):
-			return explain(fiber.ErrConflict, "Another disk is mounted in this folder: deleting it would empty that disk too.")
-		case err != nil:
-			return s.openError(err)
+		contents, err = s.checkTree(c, dir, name, target, path.Join(realDir, name), auth.ActDelete)
+		if err = s.treeError(err, "delete"); err != nil {
+			return "", err
 		}
+	}
+	id := ""
+	switch {
+	case s.cfg.Trash.Keep > 0 && !permanent:
+		id, err = s.toTrash(c, dir, name, path.Join(realDir, name), info)
+		if errors.Is(err, errOtherDisk) {
+			return "", explain(fiber.ErrConflict, "It is on another disk than the trash, so it can only be deleted for good.")
+		}
+	case info.IsDir():
 		err = dir.RemoveAll(name)
-	} else {
+	default:
 		err = dir.Remove(name)
 	}
 	if err != nil {
-		return s.openError(err)
+		return "", s.openError(err)
 	}
 	syncDir(dir)
 	s.log.Info("delete", zap.String("ip", c.IP()), zap.String("user", visitor(c)), zap.String("path", target),
-		zap.Bool("folder", info.IsDir()), zap.Int("contents", contents))
-	return nil
+		zap.Bool("folder", info.IsDir()), zap.Int("contents", contents), zap.Bool("trash", id != ""))
+	return id, nil
 }
 
-// checkTree checks the folder name of dir before it is deleted with
-// everything in it: the visitor needs the right to delete every entry (at
-// its real path as well), nothing in it may be being written, and no other
-// file system may be mounted in it. It returns the number of entries.
-func (s *Server) checkTree(c fiber.Ctx, dir *os.Root, name, target, realTarget string) (int, error) {
+// treeError explains why checkTree refused to let a folder be changed by
+// verb (delete, move): what the visitor may not do, or what is going on in
+// it.
+func (s *Server) treeError(err error, verb string) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, errDenied):
+		return explain(fiber.ErrForbidden, "You may not "+verb+" everything in this folder.")
+	case errors.Is(err, errBusy):
+		return explain(fiber.ErrConflict, "Something in this folder is being uploaded or written right now.")
+	case errors.Is(err, errMounted):
+		return explain(fiber.ErrConflict, "Another disk is mounted in this folder: "+verb+" it, and that disk would go with it.")
+	}
+	return s.openError(err)
+}
+
+// checkTree checks the folder name of dir before it is deleted, or moved,
+// with everything in it: the visitor needs the rights acts on every entry
+// (at its real path as well), nothing in it may be being written, and no
+// other file system may be mounted in it. It returns the number of entries.
+func (s *Server) checkTree(c fiber.Ctx, dir *os.Root, name, target, realTarget string, acts ...string) (int, error) {
 	sub, err := dir.OpenRoot(name)
 	if err != nil {
 		return 0, err
@@ -179,11 +281,14 @@ func (s *Server) checkTree(c fiber.Ctx, dir *os.Root, name, target, realTarget s
 				return errBusy
 			}
 		}
-		ok, err := s.mayAt(c, auth.ActDelete, path.Join(target, p), path.Join(realTarget, p), d.IsDir())
-		if err == nil && !ok {
-			err = errDenied
+		for _, act := range acts {
+			if ok, err := s.mayAt(c, act, path.Join(target, p), path.Join(realTarget, p), d.IsDir()); err != nil {
+				return err
+			} else if !ok {
+				return errDenied
+			}
 		}
-		return err
+		return nil
 	})
 	return n, err
 }
@@ -221,6 +326,14 @@ func (s *Server) rename(c fiber.Ctx, dirPath, from, to string) error {
 				return err
 			}
 			defer release()
+		}
+		// What is in a folder gets new paths, where other rules may apply:
+		// it may only move if all of it could be read and deleted here.
+		if info.IsDir() {
+			_, err := s.checkTree(c, dir, from, src, path.Join(realDir, from), auth.ActRead, auth.ActDelete)
+			if err := s.treeError(err, "rename"); err != nil {
+				return err
+			}
 		}
 		if err := renameNoReplace(dir, from, to, info); errors.Is(err, errExists) {
 			return explain(fiber.ErrConflict, "Something with this name already exists here.")
@@ -380,6 +493,14 @@ func (s *Server) mayEither(c fiber.Ctx, act, urlPath string) (bool, error) {
 		ok, err = s.allowed(c, object(urlPath, true), act)
 	}
 	return ok, err
+}
+
+// visitorName names the signed-in user; "" for anonymous visitors.
+func visitorName(c fiber.Ctx) string {
+	if u := userOf(c); u != nil {
+		return u.Username
+	}
+	return ""
 }
 
 // visitor names the signed-in user, or anonymous, for the logs.

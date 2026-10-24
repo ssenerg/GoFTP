@@ -148,7 +148,7 @@ func TestMkdirButton(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, body := (&fixture{srv: f.srv, dir: f.dir, logs: f.logs, auth: ta, token: carol}).do(t, "GET", "/shared/")
-	if strings.Contains(body, `<summary class="btn">`) || !strings.Contains(body, `id="upload"`) {
+	if strings.Contains(body, `<summary class="btn">`) || !strings.Contains(body, `id="upload"`) || strings.Contains(body, `data-folders`) {
 		t.Error("carol, who may only replace files, is offered folders or no uploads")
 	}
 	for dir, want := range map[string]int{"/shared/": 201, "/": 403} {

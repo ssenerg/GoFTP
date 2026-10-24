@@ -12,6 +12,12 @@ Postgres whose access is decided by [Casbin](https://casbin.org) policies.
   after a lost connection.
 - Images, video, audio and PDFs can be viewed in the browser, and listings
   show thumbnails of images (see [Previews](#previews)).
+- Deleted files and folders wait in a trash for 30 days (see
+  [Deleting, moving and copying](#deleting-moving-and-copying)); entries
+  can be moved, copied, and picked to act on several at once.
+- Names can be searched across folders (see [Search](#search)), and links
+  can share files and folders, or take uploads like a drop box (see
+  [Share links](#share-links)).
 - Dotfiles are never listed or served. Paths are resolved with `os.Root`, so
   requests and symlinks cannot escape the served directory.
 
@@ -158,6 +164,9 @@ token. `POST /.auth/logout` ends the session. Sessions last
 - Browser: users who may upload into a folder can drop files anywhere on its
   page, or choose them, and watch each upload's progress. Existing files
   are only replaced when "Replace files that already exist" is ticked.
+  Folders can be dropped too, or picked with "Choose a folder": their
+  folders are created first (or added to, if they exist), and dotfiles in
+  them are left out.
   Uploads are resumable: after a lost connection they go on by themselves
   from what arrived, and after a reload or a closed tab once the same file
   is chosen again.
@@ -213,8 +222,9 @@ on its URL cancels it at once.
 
 "Download zip" on a folder's page downloads everything in it that you may
 read, as one zip (`curl -OJ -H "Authorization: Bearer $TOKEN"
-"https://host/dir/?zip"`). The zip is streamed as it is made, and files are
-stored without compression: most large files do not compress anyway.
+"https://host/dir/?zip"`). Tick entries to zip only those (`?zip&pick=a.txt&pick=photos`).
+The zip is streamed as it is made, and files are stored without
+compression: most large files do not compress anyway.
 
 ## Previews
 
@@ -240,23 +250,61 @@ is trimmed back to three quarters of `cache.max_size` (512 MiB; `0` keeps
 none) by removing the least recently used. It may not be a folder that
 goftp serves.
 
-## Deleting and renaming
+## Deleting, moving and copying
 
-Everyone who may delete an entry finds Rename and Delete in its ⋯ menu.
-Deleting a folder deletes everything in it. That is refused while
-something in it is being uploaded, when the visitor may not delete all of
-it, and when another disk is mounted inside. Renaming never replaces an
-existing entry. Scripts:
+The ⋯ menu of an entry offers what the visitor may do with it: Rename,
+Move or copy (to a folder, typed as a path such as `/photos/2024`, with
+folders suggested as you type), Share and Delete. Ticking entries brings
+up a bar to download, move, copy or delete them together.
+
+Deleting moves the entry to the **Trash**, in the top bar, where it waits
+for `trash.keep` (30 days) and can be restored, or deleted for good; the
+folder's page also offers to undo it. The trash is the hidden folder
+`.goftp-trash` at the top of the served folder, so deleting and restoring
+take no time and no space. Restoring needs the folder it was in, and no
+entry of its name there. Entries on another disk than the trash, and
+anything when `trash.keep` is `0`, are deleted at once.
+
+Deleting a folder deletes everything in it, and moving or renaming one
+moves everything in it. Both are refused while something in it is being
+uploaded, when the visitor may not delete (and, to move it, read) all of
+it, and when another disk is mounted inside: what is in a folder gets new
+paths, where other rules may apply. Copies hold what the visitor may read,
+as a zip would, and are refused before they start if the visitor may not
+create all of it where it goes. Nothing replaces an existing entry.
+Scripts:
 
 ```sh
-curl -X DELETE -H "Authorization: Bearer $TOKEN" https://host/dir/old.iso
-curl -d rename=draft.txt -d to=final.txt -H "Authorization: Bearer $TOKEN" https://host/dir/
+auth="Authorization: Bearer $TOKEN"
+curl -X DELETE -H "$auth" https://host/dir/old.iso          # to the trash; ?permanent skips it
+curl -d rename=draft.txt -d to=final.txt -H "$auth" https://host/dir/
+curl -d move=a.txt -d move=b.txt -d into=/archive -H "$auth" https://host/dir/
+curl -d copy=photos -d into=/backup -H "$auth" https://host/dir/
+curl -d delete=a.txt -d delete=b.txt -d permanent=1 -H "$auth" https://host/dir/
+curl -d action=restore -d id=ID -H "$auth" https://host/.trash/   # ID from the Goftp-Trash-Ids header
 ```
 
-Deleting needs the `delete` action; renaming needs `read` and `delete` on
-the entry and `write` for the new name. Admins have `delete`; on upgrade,
-it is added only if the admin rule is still the default one. To let others
-delete, e.g. `goftp policy add operator '/*' delete`.
+Deleting needs the `delete` action; renaming and moving need `read` and
+`delete` on the entry and `write` where it goes; copying needs `read` on
+it and `write` where it goes. The trash shows entries to those who may
+read them where they were; restoring needs `write` there, and deleting
+for good `delete`. Admins have `delete`; on upgrade, it is added only if
+the admin rule is still the default one. To let others delete, e.g.
+`goftp policy add operator '/*' delete`.
+
+## Search
+
+The search box of a folder filters it as you type; Enter searches the
+folders in it too, by name, for what you may read. Every word has to be
+part of a name, in any case. The search looks through the nearest folders
+first, and stops at 200 matches or after 5 seconds. Scripts get JSON:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" "https://host/.search/?q=tax+2024&in=/docs"
+# {"results":[{"path":"/docs/Tax 2024.pdf","name":"Tax 2024.pdf","dir":false,...}],"more":false}
+```
+
+`folders=1` finds folders only, and without `q` lists the folders in `in`.
 
 ## Share links
 
@@ -267,21 +315,31 @@ password (at least 8 characters). The link is shown once: only a hash of
 it is stored. Visitors of a folder's link can browse it, download its
 files and download it as a zip.
 
+A link to a folder can instead let people upload into it, like a drop
+box: its page takes files, resumably, and shows nothing of what is in the
+folder. A name that is taken gets a number (`report (2).pdf`), so senders
+learn nothing of what is there. It works while its creator may add files
+there and share the folder. A link can also stop after a number of
+downloads (of a file from its start, or of a zip; showing it in the
+browser does not count), or for upload links of files sent.
+
 A link never gives more than its creator may still read and share: it
 stops working when they lose those rights, or when what it leads to is
 moved or deleted. **Shared**, next to **Files** in the top bar, lists your
-links, and for superadmins everyone's, to revoke them. Deleting a user, or
-giving them a new temporary password, ends their links too. Scripts:
+links, and for superadmins everyone's, with how often each was used and
+when it was last opened, to revoke them. Deleting a user, or giving them a
+new temporary password, ends their links too. Scripts:
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" -d action=create -d path=/docs/report.pdf -d expires=7d https://host/.shares/
-# {"id":1,"url":"https://host/.share/...","expires_at":"..."}
+# {"id":1,"url":"https://host/.share/...","expires_at":"...","upload":false,"max_uses":0}
+curl -H "Authorization: Bearer $TOKEN" -d action=create -d path=/inbox -d expires=30d -d kind=upload -d max_uses=20 https://host/.shares/
 curl -H "Authorization: Bearer $TOKEN" -d action=revoke -d id=1 https://host/.shares/
 ```
 
-Creating links needs the `share` action on what is shared. Admins have
-it; on upgrade, it is added only if the admin rule is still the default
-one. To let others share, e.g. `goftp policy add user:bob '/bob/*' share`.
+Creating links needs the `share` action on what is shared, and for
+upload links `write` too. Admins have it; on upgrade, it is added only if
+the admin rule is still the default one. To let others share, e.g. `goftp policy add user:bob '/bob/*' share`.
 
 ## Security notes
 
@@ -316,6 +374,9 @@ one. To let others share, e.g. `goftp policy add user:bob '/bob/*' share`.
   client's sign-in budget, and each link takes at most 20 password checks
   a minute. The cookie that remembers a password lasts at most
   `auth.session_ttl`.
+- Upload links let whoever has them fill a folder, with files of up to
+  `upload.max_size` each: give them a short life, a password, or a limit
+  of files.
 
 ## Troubleshooting
 

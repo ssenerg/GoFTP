@@ -129,13 +129,21 @@ func (s *PgStore) DeleteExpiredSessions(ctx context.Context) error {
 	return err
 }
 
-const shareColumns = "s.id, s.path, s.is_dir, s.password_hash, s.created_by, u.username, s.created_at, s.expires_at"
+const shareColumns = "s.id, s.path, s.is_dir, s.password_hash, s.upload, s.max_uses, s.uses, s.created_by, u.username, " +
+	"s.created_at, s.expires_at, s.last_used_at"
 
 func scanShare(row pgx.Row) (*Share, error) {
-	var sh Share
-	err := row.Scan(&sh.ID, &sh.Path, &sh.IsDir, &sh.PasswordHash, &sh.CreatedBy, &sh.Creator, &sh.CreatedAt, &sh.ExpiresAt)
+	var (
+		sh       Share
+		lastUsed *time.Time
+	)
+	err := row.Scan(&sh.ID, &sh.Path, &sh.IsDir, &sh.PasswordHash, &sh.Upload, &sh.MaxUses, &sh.Uses, &sh.CreatedBy, &sh.Creator,
+		&sh.CreatedAt, &sh.ExpiresAt, &lastUsed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
+	}
+	if lastUsed != nil {
+		sh.LastUsedAt = *lastUsed
 	}
 	return &sh, err
 }
@@ -159,15 +167,32 @@ func (s *PgStore) CreateShare(ctx context.Context, tokenHash []byte, sh *Share) 
 		if n >= MaxShares {
 			return ErrTooMany
 		}
-		return tx.QueryRow(ctx, `INSERT INTO shares (token_hash, path, is_dir, created_by, password_hash, expires_at)
-			VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at`,
-			tokenHash, sh.Path, sh.IsDir, id, sh.PasswordHash, sh.ExpiresAt).Scan(&sh.ID, &sh.CreatedAt)
+		return tx.QueryRow(ctx, `INSERT INTO shares (token_hash, path, is_dir, created_by, password_hash, expires_at, upload, max_uses)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, created_at`,
+			tokenHash, sh.Path, sh.IsDir, id, sh.PasswordHash, sh.ExpiresAt, sh.Upload, sh.MaxUses).Scan(&sh.ID, &sh.CreatedAt)
 	})
 }
 
 func (s *PgStore) ShareByToken(ctx context.Context, tokenHash []byte) (*Share, error) {
 	return scanShare(s.db.QueryRow(ctx, "SELECT "+shareColumns+` FROM shares s JOIN users u ON u.id = s.created_by
 		WHERE s.token_hash = $1 AND s.expires_at > now()`, tokenHash))
+}
+
+func (s *PgStore) ShareByID(ctx context.Context, id int64) (*Share, error) {
+	return scanShare(s.db.QueryRow(ctx, "SELECT "+shareColumns+` FROM shares s JOIN users u ON u.id = s.created_by
+		WHERE s.id = $1 AND s.expires_at > now()`, id))
+}
+
+func (s *PgStore) UseShare(ctx context.Context, id int64) (bool, error) {
+	tag, err := s.db.Exec(ctx, `UPDATE shares SET uses = uses + 1, last_used_at = now()
+		WHERE id = $1 AND expires_at > now() AND (max_uses = 0 OR uses < max_uses)`, id)
+	return err == nil && tag.RowsAffected() == 1, err
+}
+
+func (s *PgStore) TouchShare(ctx context.Context, id int64) error {
+	_, err := s.db.Exec(ctx, `UPDATE shares SET last_used_at = now()
+		WHERE id = $1 AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')`, id)
+	return err
 }
 
 func (s *PgStore) Shares(ctx context.Context, userID int64) ([]Share, error) {
@@ -198,11 +223,11 @@ func (s *PgStore) DeleteExpiredShares(ctx context.Context) error {
 	return err
 }
 
-const uploadColumns = "id, user_id, dir, name, length, replace, temp, created_at, expires_at"
+const uploadColumns = "id, user_id, dir, name, length, replace, temp, share_id, created_at, expires_at"
 
 func scanUpload(row pgx.Row) (*Upload, error) {
 	var up Upload
-	err := row.Scan(&up.ID, &up.UserID, &up.Dir, &up.Name, &up.Length, &up.Replace, &up.Temp, &up.CreatedAt, &up.ExpiresAt)
+	err := row.Scan(&up.ID, &up.UserID, &up.Dir, &up.Name, &up.Length, &up.Replace, &up.Temp, &up.ShareID, &up.CreatedAt, &up.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -210,9 +235,9 @@ func scanUpload(row pgx.Row) (*Upload, error) {
 }
 
 func (s *PgStore) CreateUpload(ctx context.Context, tokenHash []byte, up *Upload, keep time.Duration) error {
-	return s.db.QueryRow(ctx, `INSERT INTO uploads (token_hash, user_id, dir, name, length, replace, temp, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + $8::interval) RETURNING id, created_at, expires_at`,
-		tokenHash, up.UserID, up.Dir, up.Name, up.Length, up.Replace, up.Temp, keep).Scan(&up.ID, &up.CreatedAt, &up.ExpiresAt)
+	return s.db.QueryRow(ctx, `INSERT INTO uploads (token_hash, user_id, dir, name, length, replace, temp, share_id, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now() + $9::interval) RETURNING id, created_at, expires_at`,
+		tokenHash, up.UserID, up.Dir, up.Name, up.Length, up.Replace, up.Temp, up.ShareID, keep).Scan(&up.ID, &up.CreatedAt, &up.ExpiresAt)
 }
 
 func (s *PgStore) UploadByToken(ctx context.Context, tokenHash []byte) (*Upload, error) {

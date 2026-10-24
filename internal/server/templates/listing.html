@@ -18,8 +18,19 @@
   {{with .Renamed}}
   <div class="alert success banner" id="renamed" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg><span>Renamed to <a href="{{.Href}}">{{.Name}}</a>.</span></div>
   {{end}}
+  {{with .Restored}}
+  <div class="alert success banner" id="restored" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg><span>Restored <a href="{{.Href}}">{{.Name}}</a> from the trash.</span></div>
+  {{end}}
+  {{with .Moved}}
+  <div class="alert success banner" id="moved" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg><span>{{.Verb}}{{if ne .N 1}} {{.N}} items{{end}} to <a href="{{.Href}}">{{.Name}}</a>.</span></div>
+  {{end}}
   {{if .Deleted}}
-  <div class="alert success banner" id="deleted" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg>Deleted.</div>
+  <div class="alert success banner" id="deleted" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg>
+    {{- if .Undo}}<span>Moved <strong>{{.Undo.Name}}</strong> to the trash.</span>
+    <form method="post" action="/.trash/"><input type="hidden" name="action" value="restore"><input type="hidden" name="id" value="{{.Undo.ID}}"><button type="submit" class="linkish">Undo</button></form>
+    {{- else if .Trashed}}<span>Moved {{if eq .Deleted 1}}it{{else}}{{.Deleted}} items{{end}} to the <a href="/.trash/">trash</a>.</span>
+    {{- else}}<span>Deleted{{if ne .Deleted 1}} {{.Deleted}} items{{end}}.</span>{{end}}
+  </div>
   {{end}}
 
   <div class="head">
@@ -28,12 +39,21 @@
       <p class="summary">{{.Summary}}{{with .Share}} · Link expires <time datetime="{{.ExpiresISO}}">{{.Expires}}</time>{{end}}</p>
     </div>
     <div class="tools">
-      {{if .Items}}
+      {{if and .Items .Shared}}
       <label class="search" id="search" hidden>
         <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
         <input id="filter" type="search" placeholder="Filter this folder" aria-label="Filter this folder" autocomplete="off">
         <kbd aria-hidden="true">/</kbd>
       </label>
+      {{else if .Items}}
+      <form id="search" class="search-form" method="get" action="/.search/" role="search">
+        <label class="search">
+          <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
+          <input id="filter" type="search" name="q" placeholder="Search" aria-label="Filter this folder, or press Enter to search the folders in it too" autocomplete="off">
+          <kbd aria-hidden="true">/</kbd>
+        </label>
+        {{if ne .Path "/"}}<input type="hidden" name="in" value="{{.Path}}">{{end}}
+      </form>
       {{end}}
       {{if .Items}}
       <a class="btn" href="?zip" download><svg class="i" aria-hidden="true"><use href="#i-archive"/></svg>Download zip</a>
@@ -43,7 +63,7 @@
         <summary class="btn"><svg class="i" aria-hidden="true"><use href="#i-link"/></svg>Share</summary>
         <form method="post" action="/.shares/" class="popover share-form" data-name="{{.Title}}">
           <input type="hidden" name="action" value="create"><input type="hidden" name="path" value="{{.Path}}">
-          {{template "share-fields"}}
+          {{template "share-fields" true}}
         </form>
       </details>
       {{end}}
@@ -63,15 +83,17 @@
   </div>
 
   {{with .Upload}}
-  <form id="upload" class="upload" method="post" enctype="multipart/form-data" action="{{.Action}}">
+  <form id="upload" class="upload" method="post" enctype="multipart/form-data" action="{{.Action}}"{{if $.Mkdir}} data-folders="true"{{end}}>
     <div class="dropzone">
       <input type="file" name="file" multiple required aria-label="Choose files to upload">
       <span class="dz-icon" aria-hidden="true"><svg class="i"><use href="#i-upload"/></svg></span>
       <div class="dz-text">
-        <p class="pointer"><strong>Drop files here</strong> or click to choose them</p>
+        <p class="pointer"><strong>Drop files{{if $.Mkdir}} or folders{{end}} here</strong> or click to choose files</p>
         <p class="touch"><strong>Tap to choose files</strong> to upload</p>
         <p class="dz-hint">They are uploaded to this folder.</p>
       </div>
+      {{if $.Mkdir}}<button type="button" class="btn small dz-folder pointer" hidden><svg class="i" aria-hidden="true"><use href="#i-folder-plus"/></svg>Choose a folder</button>
+      <input type="file" class="folder-picker" webkitdirectory multiple hidden aria-label="Choose a folder to upload">{{end}}
     </div>
     {{if .Replace}}
     <div class="upload-options">
@@ -98,6 +120,7 @@
     {{if .Items}}
     <table class="files">
       <thead><tr>
+        <th class="pick"><input type="checkbox" class="pick-all" aria-label="Pick all" hidden></th>
         <th aria-sort="{{.SortState "name"}}"><a href="{{.SortHref "name"}}">Name</a></th>
         <th class="num" aria-sort="{{.SortState "size"}}"><a href="{{.SortHref "size"}}">Size</a></th>
         <th class="date" aria-sort="{{.SortState "modified"}}"><a href="{{.SortHref "modified"}}">Modified</a></th>
@@ -105,20 +128,51 @@
       </tr></thead>
       <tbody>
         {{with .Parent}}
-        <tr class="up"><td class="name" colspan="{{if $.Manage}}4{{else}}3{{end}}"><a href="{{.}}"><svg class="i kind" aria-hidden="true"><use href="#i-up"/></svg><span>Parent folder</span></a></td></tr>
+        <tr class="up"><td class="pick"></td><td class="name" colspan="{{if $.Manage}}4{{else}}3{{end}}"><a href="{{.}}"><svg class="i kind" aria-hidden="true"><use href="#i-up"/></svg><span>Parent folder</span></a></td></tr>
         {{end}}
         {{range .Items}}
         <tr data-name="{{.Key}}"{{if .Selected}} class="selected"{{else if .New}} class="new"{{end}}>
+          <td class="pick"><input type="checkbox" name="pick" value="{{.Name}}" form="picked" aria-label="Pick {{.Name}}"></td>
           <td class="name"><a href="{{.Href}}{{if .Preview}}?view{{end}}">{{if .Thumb}}<span class="thumb-box"><svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><img class="thumb" src="{{.Href}}?thumb" alt="" loading="lazy" decoding="async"></span>{{else}}<svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg>{{end}}<span>{{.Name}}</span></a></td>
           <td class="num">{{.Size}}</td>
           <td class="date"><time datetime="{{.ModISO}}">{{.ModTime}}</time></td>
-          {{if $.Manage}}<td class="act">{{if or .CanDelete .CanShare}}<a class="icon-btn" href="?item={{.Name}}" data-item="{{.Name}}" data-path="{{.Path}}" data-dir="{{.IsDir}}" data-rename="{{.CanRename}}" data-share="{{.CanShare}}" data-delete="{{.CanDelete}}" aria-label="{{.ActionsLabel}}" aria-haspopup="dialog" aria-expanded="false"><svg class="i" aria-hidden="true"><use href="#i-more"/></svg></a>{{end}}</td>{{end}}
+          {{if $.Manage}}<td class="act">{{if or .CanDelete .CanShare $.Copy}}<a class="icon-btn" href="?item={{.Name}}" data-item="{{.Name}}" data-path="{{.Path}}" data-dir="{{.IsDir}}" data-rename="{{.CanRename}}" data-move="{{$.Copy}}" data-share="{{.CanShare}}" data-delete="{{.CanDelete}}" aria-label="{{.ActionsLabel $.Copy}}" aria-haspopup="dialog" aria-expanded="false"><svg class="i" aria-hidden="true"><use href="#i-more"/></svg></a>{{end}}</td>{{end}}
         </tr>
         {{end}}
       </tbody>
     </table>
+    <form id="picked" class="picked" method="post" action="{{.Action}}">
+      <span class="picked-count" aria-live="polite">Tick entries to {{.PickHint}} them together.</span>
+      <div class="picked-actions">
+        <button type="submit" class="btn small" formmethod="get" name="zip" value=""><svg class="i" aria-hidden="true"><use href="#i-archive"/></svg>Download zip</button>
+        {{- if .Copy}}
+        <details class="picked-pop">
+          <summary class="btn small"><svg class="i" aria-hidden="true"><use href="#i-copy"/></svg>{{if .DeleteAny}}Move or copy{{else}}Copy{{end}}</summary>
+          <div class="popover">
+            <label class="field"><span>To the folder</span>
+              <input name="into" value="{{.Folder}}" maxlength="4000" autocomplete="off" spellcheck="false" list="folders">
+            </label>
+            <p class="popover-error" role="alert" hidden></p>
+            <div class="popover-actions"><button type="submit" name="op" value="copy" class="btn small">Copy</button>{{if .DeleteAny}}<button type="submit" name="op" value="move" class="btn primary small">Move</button>{{end}}</div>
+          </div>
+        </details>
+        {{- end}}
+        {{- if .DeleteAny}}
+        <details class="picked-pop">
+          <summary class="btn small"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Delete</summary>
+          <div class="popover">
+            <p class="delete-note">{{if .TrashKeep}}Move what is ticked to the trash? It can be restored from there for {{.TrashKeep}}.{{else}}Delete what is ticked, folders with everything in them? This cannot be undone.{{end}}</p>
+            {{if .TrashKeep}}<label class="check"><input type="checkbox" name="permanent" value="1"> Delete them for good instead</label>{{end}}
+            <p class="popover-error" role="alert" hidden></p>
+            <div class="popover-actions"><button type="submit" name="op" value="delete" class="btn danger small"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Delete</button></div>
+          </div>
+        </details>
+        {{- end}}
+        <button type="button" class="btn small picked-clear" hidden>Clear</button>
+      </div>
+    </form>
     {{if .Manage}}<template id="item-actions">{{template "item-forms" ($.Forms nil)}}</template>{{end}}
-    <div id="no-match" class="empty" hidden><svg class="i" aria-hidden="true"><use href="#i-search"/></svg><p>Nothing here matches your filter.</p></div>
+    <div id="no-match" class="empty" hidden><svg class="i" aria-hidden="true"><use href="#i-search"/></svg><p>Nothing here matches your filter.</p>{{if not .Shared}}<p>Press Enter to search the folders in it too.</p>{{end}}</div>
     {{else}}
     <div class="empty">
       <svg class="i" aria-hidden="true"><use href="#i-folder"/></svg>
@@ -145,13 +199,26 @@
   <p class="popover-error" role="alert" hidden></p>
   <div class="popover-actions"><button type="submit" class="btn primary small">Rename</button></div>
 </form>
+<form method="post" action="{{.Action}}" class="item-form" data-kind="move"{{if not .CanCopy}} hidden{{end}}>
+  <input type="hidden" name="pick" value="{{.Name}}">
+  <label class="field"><span>Move or copy to the folder</span>
+    <input name="into" value="{{.Folder}}" required maxlength="4000" autocomplete="off" spellcheck="false" list="folders">
+  </label>
+  <p class="popover-error" role="alert" hidden></p>
+  <div class="popover-actions"><button type="submit" name="op" value="copy" class="btn small"><svg class="i" aria-hidden="true"><use href="#i-copy"/></svg>Copy</button><button type="submit" name="op" value="move" class="btn primary small"{{if not .CanDelete}} hidden{{end}}>Move</button></div>
+</form>
 <form method="post" action="/.shares/" class="item-form share-form" data-kind="share"{{if not .CanShare}} hidden{{end}}>
   <input type="hidden" name="action" value="create"><input type="hidden" name="path" value="{{.Path}}">
-  {{template "share-fields"}}
+  {{template "share-fields" .IsDir}}
 </form>
-<form method="post" action="{{.Action}}" class="item-form" data-kind="delete"{{if not .CanDelete}} hidden{{end}}>
+<form method="post" action="{{.Action}}" class="item-form" data-kind="delete" data-trash="{{.TrashKeep}}"{{if not .CanDelete}} hidden{{end}}>
   <input type="hidden" name="delete" value="{{.Name}}">
+  {{- if .TrashKeep}}
+  <p class="delete-note">Move {{if .IsDir}}this folder{{else}}this file{{end}} to the trash? It can be restored from there for {{.TrashKeep}}.</p>
+  <label class="check"><input type="checkbox" name="permanent" value="1"> Delete it for good instead</label>
+  {{- else}}
   <p class="delete-note">{{if .IsDir}}Delete this folder and everything in it?{{else}}Delete this file?{{end}} This cannot be undone.</p>
+  {{- end}}
   <p class="popover-error" role="alert" hidden></p>
   <div class="popover-actions"><button type="submit" class="btn danger small"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Delete</button></div>
 </form>
@@ -159,6 +226,9 @@
 
 {{define "share-fields"}}
 <p class="form-title"><svg class="i" aria-hidden="true"><use href="#i-link"/></svg>Share a link</p>
+<label class="field share-kind"{{if not .}} hidden{{end}}><span>People with it may</span>
+  <select name="kind"><option value="read" selected>Open and download what is here</option><option value="upload">Upload files here, without seeing them</option></select>
+</label>
 <div class="share-row">
   <label class="field"><span>Expires in</span>
     <select name="expires">{{range expiryOptions}}<option value="{{.Value}}"{{if .Default}} selected{{end}}>{{.Label}}</option>{{end}}</select>
@@ -167,6 +237,9 @@
     <input type="password" name="password" minlength="8" maxlength="256" autocomplete="new-password" placeholder="None">
   </label>
 </div>
+<label class="field share-limit"><span><span class="share-noun">Downloads</span> allowed <span class="opt">(optional)</span></span>
+  <input type="number" name="max_uses" min="1" max="1000000" inputmode="numeric" placeholder="No limit">
+</label>
 <p class="popover-error" role="alert" hidden></p>
 <div class="popover-actions"><button type="submit" class="btn primary small"><svg class="i" aria-hidden="true"><use href="#i-link"/></svg>Create link</button></div>
 {{end}}
