@@ -75,6 +75,8 @@
   }
 
   // Filtering the listing; "/" jumps to the filter, Escape clears it.
+  // Enter searches the folders in it too, where the filter is a search
+  // form.
   const filter = $("#filter");
   if (filter) {
     $("#search").hidden = false;
@@ -428,6 +430,41 @@
       if (e.key === "Escape" && open) close(true);
     });
   }
+
+  // Folder fields suggest the folders in what was typed so far, or those
+  // named like its last part.
+  let folderList = null;
+  let asked = "";
+  let suggestTimer;
+  const suggest = async field => {
+    if (!folderList) {
+      folderList = document.createElement("datalist");
+      folderList.id = "folders";
+      document.body.append(folderList);
+    }
+    const typed = field.value.trim();
+    const cut = typed.lastIndexOf("/") + 1;
+    const query = new URLSearchParams({ folders: "1", in: typed.slice(0, cut) || "/", q: typed.slice(cut) });
+    if (query.toString() === asked) return;
+    asked = query.toString();
+    try {
+      const resp = await fetch("/.search/?" + query, { headers: { Accept: "application/json" } });
+      if (!resp.ok || asked !== query.toString()) return;
+      const { results } = await resp.json();
+      folderList.replaceChildren(...results.map(r => Object.assign(document.createElement("option"), { value: r.path })));
+    } catch {
+      // No suggestions, then.
+    }
+  };
+  const folderField = e => e.target.matches && e.target.matches("input[list=folders]");
+  document.addEventListener("focusin", e => {
+    if (folderField(e)) suggest(e.target);
+  });
+  document.addEventListener("input", e => {
+    if (!folderField(e)) return;
+    clearTimeout(suggestTimer);
+    suggestTimer = setTimeout(() => suggest(e.target), 150);
+  });
 
   // Picking entries to act on them together: a bar below the list follows
   // the ticks. Its zip downloads as usual; its other forms say in place why

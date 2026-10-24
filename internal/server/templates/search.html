@@ -1,0 +1,54 @@
+{{define "search"}}{{template "head" .}}
+<body>
+{{template "topbar" .}}
+<main class="container">
+  <div class="head">
+    <div>
+      <h1>Search</h1>
+      <p class="summary">{{if .Searched}}{{.Summary}}{{else}}Find files and folders by name{{end}} in <a href="{{.InHref}}">{{.InName}}</a>{{if ne .In "/"}} and the folders in it · <a href="/.search/?q={{.Query}}">Search all files</a>{{end}}</p>
+    </div>
+  </div>
+
+  <form class="search-form" method="get" action="/.search/" role="search">
+    <label class="search wide">
+      <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
+      <input type="search" name="q" value="{{.Query}}" placeholder="A name, or words in it" aria-label="Search by name" autocomplete="off" autofocus>
+    </label>
+    {{if ne .In "/"}}<input type="hidden" name="in" value="{{.In}}">{{end}}
+    <button type="submit" class="btn primary">Search</button>
+  </form>
+
+  {{with .Stopped}}<div class="alert note banner" role="status"><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>{{.}}</span></div>{{end}}
+
+  {{if .Searched}}
+  <div class="card">
+    {{if .Hits}}
+    <table class="files">
+      <thead><tr><th>Name</th><th class="where-col">In</th><th class="num">Size</th><th class="date">Modified</th></tr></thead>
+      <tbody>
+        {{range .Hits}}
+        <tr>
+          <td class="name"><a href="{{.Href}}{{if .Preview}}?view{{end}}"><svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><span>{{.Name}}</span></a></td>
+          <td class="where-col"><a href="{{.FolderHref}}">{{.Folder}}</a></td>
+          <td class="num">{{.Size}}</td>
+          <td class="date"><time datetime="{{.ModISO}}">{{.ModTime}}</time></td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <div class="empty">
+      <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
+      <p>Nothing you may open is named like “{{.Query}}”.</p>
+      <p>Every word has to be part of the name. Try fewer words, or part of one.</p>
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+</main>
+{{template "footer" .}}
+{{template "icons"}}
+{{script}}
+</body>
+</html>
+{{end}}

@@ -137,6 +137,8 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 	s.app.Get(strings.TrimSuffix(trashPath, "/"), func(c fiber.Ctx) error { return s.redirect(c, trashPath) })
 	s.app.Get(trashPath, s.trashPage)
 	s.app.Post(trashPath, s.trashAction)
+	s.app.Get(strings.TrimSuffix(searchPath, "/"), func(c fiber.Ctx) error { return s.redirect(c, searchPath) })
+	s.app.Get(searchPath, s.search)
 	s.app.Get(sharePrefix+"*", s.shared)
 	s.app.Post(sharePrefix+"*", s.unlockShare)
 	s.app.Head(uploadsPrefix+"*", s.headUpload)

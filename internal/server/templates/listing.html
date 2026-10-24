@@ -39,12 +39,21 @@
       <p class="summary">{{.Summary}}{{with .Share}} · Link expires <time datetime="{{.ExpiresISO}}">{{.Expires}}</time>{{end}}</p>
     </div>
     <div class="tools">
-      {{if .Items}}
+      {{if and .Items .Shared}}
       <label class="search" id="search" hidden>
         <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
         <input id="filter" type="search" placeholder="Filter this folder" aria-label="Filter this folder" autocomplete="off">
         <kbd aria-hidden="true">/</kbd>
       </label>
+      {{else if .Items}}
+      <form id="search" class="search-form" method="get" action="/.search/" role="search">
+        <label class="search">
+          <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
+          <input id="filter" type="search" name="q" placeholder="Search" aria-label="Filter this folder, or press Enter to search the folders in it too" autocomplete="off">
+          <kbd aria-hidden="true">/</kbd>
+        </label>
+        {{if ne .Path "/"}}<input type="hidden" name="in" value="{{.Path}}">{{end}}
+      </form>
       {{end}}
       {{if .Items}}
       <a class="btn" href="?zip" download><svg class="i" aria-hidden="true"><use href="#i-archive"/></svg>Download zip</a>
@@ -163,7 +172,7 @@
       </div>
     </form>
     {{if .Manage}}<template id="item-actions">{{template "item-forms" ($.Forms nil)}}</template>{{end}}
-    <div id="no-match" class="empty" hidden><svg class="i" aria-hidden="true"><use href="#i-search"/></svg><p>Nothing here matches your filter.</p></div>
+    <div id="no-match" class="empty" hidden><svg class="i" aria-hidden="true"><use href="#i-search"/></svg><p>Nothing here matches your filter.</p>{{if not .Shared}}<p>Press Enter to search the folders in it too.</p>{{end}}</div>
     {{else}}
     <div class="empty">
       <svg class="i" aria-hidden="true"><use href="#i-folder"/></svg>

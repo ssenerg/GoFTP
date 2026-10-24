@@ -306,6 +306,14 @@
     font: 12px/18px ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   .search input:focus + kbd, .search input:not(:placeholder-shown) + kbd { display: none; }
+  .search-form { display: flex; flex-wrap: wrap; gap: 10px; margin: 0; }
+  .head + .search-form { margin-bottom: 16px; }
+  .search.wide { flex: 1 1 280px; width: auto; }
+  .search.wide input { padding-right: 12px; }
+  .alert.note { background: var(--accent-soft); color: var(--text); }
+  .files .where-col { color: var(--muted); font-size: 13.5px; overflow-wrap: anywhere; }
+  .files .where-col a { color: inherit; }
+  .files .where-col a:hover { color: var(--accent); }
   .banner { margin-bottom: 16px; }
   .banner a, .banner .linkish { color: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
   .banner form { margin: 0 0 0 auto; }
@@ -614,7 +622,7 @@
     .touch { display: block; }
   }
   @media (max-width: 720px) {
-    .files .date { display: none; }
+    .files .date, .files .where-col { display: none; }
     /* Each user or rule becomes a block: who on top, the rest below. */
     .list-table thead { display: none; }
     .list-table tbody tr { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
@@ -643,6 +651,7 @@
     .head h1 { font-size: 22px; }
     .tools, .search { width: 100%; }
     .search { flex: 1; width: auto; }
+    .tools .search-form { flex: 1 1 100%; }
     .files th, .files td { padding: 0 12px; }
     .files .num { width: auto; }
     .dz-hint { display: none; }

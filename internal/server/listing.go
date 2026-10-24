@@ -82,6 +82,8 @@ func (s *Server) page(c fiber.Ctx, title string) page {
 		p.Section = "shared"
 	case strings.HasPrefix(c.Path(), trashPath):
 		p.Section = "trash"
+	case strings.HasPrefix(c.Path(), searchPath):
+		p.Section = "files"
 	case !strings.HasPrefix(c.Path(), "/."):
 		p.Section = "files"
 	}
