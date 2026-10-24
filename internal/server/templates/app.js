@@ -39,7 +39,8 @@
 
   // Confirmations are shown once, not again on reload.
   const params = new URLSearchParams(location.search);
-  const shown = ["uploaded", "created", "renamed", "restored", "deleted", "undo", "trashed", "done"].filter(p => params.has(p));
+  const shown = ["uploaded", "created", "renamed", "restored", "deleted", "undo", "trashed", "moved", "copied", "to", "done"]
+    .filter(p => params.has(p));
   if (shown.length) {
     for (const p of shown) params.delete(p);
     history.replaceState(null, "", location.pathname + (params.size ? "?" + params : ""));
@@ -260,7 +261,45 @@
     });
   }
 
-  // Rename, share and delete: a popover for each entry, made from a
+  // Moving and copying entries to another folder: on success, the folder's
+  // page says where they went.
+  const moveFailed = {
+    0: "The connection was lost. Try again.",
+    400: "Name the folder as a path, such as /photos/2024.",
+    401: "You were signed out. Sign in and try again.",
+    403: "You may not do that there.",
+    404: "There is no such folder.",
+    409: "Something with this name is in that folder already, or is being uploaded.",
+  };
+  const moveForm = form => {
+    const error = $(".popover-error", form);
+    form.addEventListener("submit", async e => {
+      e.preventDefault();
+      const op = e.submitter && e.submitter.value === "move" ? "move" : "copy";
+      const body = new URLSearchParams(new FormData(form));
+      body.set("op", op);
+      const buttons = $$("button", form);
+      for (const b of buttons) b.disabled = true;
+      let resp = null;
+      let status = 0;
+      try {
+        resp = await fetch(form.getAttribute("action"), { method: "POST", body });
+        status = resp.status;
+      } catch {
+        status = 0;
+      }
+      for (const b of buttons) b.disabled = false;
+      if (status === 201) {
+        location.assign(form.getAttribute("action") + `?${op === "move" ? "moved" : "copied"}=${body.getAll("pick").length}` +
+          "&to=" + encodeURIComponent(form.elements.into.value.trim()));
+        return;
+      }
+      error.textContent = (await detailOf(resp)) || moveFailed[status] || `It could not be ${op === "move" ? "moved" : "copied"} (error ${status}).`;
+      error.hidden = false;
+    });
+  };
+
+  // Rename, move, share and delete: a popover for each entry, made from a
   // template.
   const itemForms = $("#item-actions");
   if (itemForms) {
@@ -303,6 +342,12 @@
         if (kind === "share") {
           form.elements.path.value = link.dataset.path;
           shareForm(form, name);
+          continue;
+        }
+        if (kind === "move") {
+          form.elements.pick.value = name;
+          $("button[value=move]", form).hidden = link.dataset.delete !== "true";
+          moveForm(form);
           continue;
         }
         const error = $(".popover-error", form);
@@ -360,6 +405,8 @@
         // The name without its extension, ready to be typed over.
         const dot = isDir ? -1 : name.lastIndexOf(".");
         to.setSelectionRange(0, dot > 0 ? dot : name.length);
+      } else if (link.dataset.move === "true") {
+        $("form[data-kind=move] input[name=into]", pop).focus();
       } else if (link.dataset.share === "true") {
         $("form[data-kind=share] select", pop).focus();
       } else {

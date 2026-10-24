@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"errors"
 	"io"
-	"io/fs"
 	"mime"
 	"net"
 	"os"
@@ -15,8 +14,6 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
-
-	"goftp/internal/auth"
 )
 
 // serveZip streams the folder at urlPath, which really lives at realPath,
@@ -52,36 +49,11 @@ func zipName(urlPath string) string {
 // zw under prefix, and what the folders in it hold in turn. ancestors are
 // the real paths of the folders being added.
 func (s *Server) zipFolder(zw *zip.Writer, urlPath, realPath, prefix string, allow allowFunc, ancestors []string) error {
-	d, err := s.root.Open(rootName(realPath))
+	items, err := s.readable(urlPath, realPath, allow)
 	if err != nil {
 		return err
 	}
-	entries, err := d.ReadDir(-1)
-	_ = d.Close()
-	if err != nil {
-		return err
-	}
-	slices.SortFunc(entries, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
-	locked := make(map[string]bool)
-	for _, e := range entries {
-		if target, ok := lockTarget(e.Name()); ok && s.locked(rootName(realPath), target) {
-			locked[target] = true
-		}
-	}
-	for _, e := range entries {
-		if locked[e.Name()] {
-			continue
-		}
-		item, ok := s.listItem(urlPath, realPath, e)
-		if !ok {
-			continue
-		}
-		entryPath := path.Join(urlPath, item.Name)
-		if ok, err := mayBoth(allow, auth.ActRead, entryPath, item.real, item.IsDir); err != nil {
-			return err
-		} else if !ok {
-			continue
-		}
+	for _, item := range items {
 		hdr := &zip.FileHeader{Name: prefix + item.Name, Modified: item.mod}
 		if !item.IsDir {
 			if err := s.zipFile(zw, hdr, item.real); err != nil {
@@ -96,11 +68,28 @@ func (s *Server) zipFolder(zw *zip.Writer, urlPath, realPath, prefix string, all
 		if _, err := zw.CreateHeader(hdr); err != nil {
 			return err
 		}
-		if err := s.zipFolder(zw, entryPath, item.real, hdr.Name, allow, append(ancestors, item.real)); err != nil {
+		if err := s.zipFolder(zw, item.Path, item.real, hdr.Name, allow, append(ancestors, item.real)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// readable lists the entries of the folder at urlPath, which really lives
+// at realPath, that allow lets the visitor read, as listings show them,
+// ordered by name.
+func (s *Server) readable(urlPath, realPath string, allow allowFunc) ([]listItem, error) {
+	d, err := s.root.Open(rootName(realPath))
+	if err != nil {
+		return nil, err
+	}
+	items, err := s.folderItems(d, urlPath, realPath, allow)
+	_ = d.Close()
+	if err != nil {
+		return nil, err
+	}
+	slices.SortFunc(items, func(a, b listItem) int { return strings.Compare(a.Name, b.Name) })
+	return items, nil
 }
 
 // loops reports whether the folder at realPath contains, or is, one of the

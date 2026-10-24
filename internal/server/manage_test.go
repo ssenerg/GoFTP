@@ -260,7 +260,8 @@ func TestManageForms(t *testing.T) {
 	}
 }
 
-// Entries offer renaming, sharing and deleting to visitors who may do that.
+// Entries offer renaming, moving, copying, sharing and deleting to visitors
+// who may do that.
 func TestItemActions(t *testing.T) {
 	ta := newTestAuth(t)
 	f := newFixtureWith(t, ta)
@@ -270,17 +271,20 @@ func TestItemActions(t *testing.T) {
 
 	_, body := f.as("admin").do(t, "GET", "/")
 	for _, want := range []string{
-		`href="?item=a.txt" data-item="a.txt" data-path="/a.txt" data-dir="false" data-rename="true" data-share="true" data-delete="true" aria-label="Rename, share or delete a.txt"`,
+		`href="?item=a.txt" data-item="a.txt" data-path="/a.txt" data-dir="false" data-rename="true" data-move="true" data-share="true" data-delete="true" aria-label="Rename, move, copy, share or delete a.txt"`,
 		`data-item="box" data-path="/box" data-dir="true"`, `<template id="item-actions">`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("admin's listing lacks %s", want)
 		}
 	}
-	for _, role := range []string{"operator", "user"} {
-		if _, body := f.as(role).do(t, "GET", "/"); strings.Contains(body, `data-item="`) || strings.Contains(body, `<template id="item-actions">`) {
-			t.Errorf("%s is offered renaming or deleting", role)
-		}
+	// Operators may add files, so they may copy entries.
+	if _, body := f.as("operator").do(t, "GET", "/"); !strings.Contains(body,
+		`data-item="a.txt" data-path="/a.txt" data-dir="false" data-rename="false" data-move="true" data-share="false" data-delete="false" aria-label="Copy a.txt"`) {
+		t.Error("operator is not offered copying alone")
+	}
+	if _, body := f.as("user").do(t, "GET", "/"); strings.Contains(body, `data-item="`) || strings.Contains(body, `<template id="item-actions">`) {
+		t.Error("user is offered something to do")
 	}
 
 	// Rules decide per entry; renaming also needs the right to create.
@@ -290,14 +294,14 @@ func TestItemActions(t *testing.T) {
 	}
 	e := &fixture{srv: f.srv, dir: f.dir, logs: f.logs, auth: ta, token: erin}
 	_, body = e.do(t, "GET", "/box/")
-	if !strings.Contains(body, `data-item="mine.txt" data-path="/box/mine.txt" data-dir="false" data-rename="false" data-share="false" data-delete="true" aria-label="Delete mine.txt"`) ||
+	if !strings.Contains(body, `data-item="mine.txt" data-path="/box/mine.txt" data-dir="false" data-rename="false" data-move="false" data-share="false" data-delete="true" aria-label="Delete mine.txt"`) ||
 		strings.Contains(body, `data-item="other.txt"`) || strings.Contains(body, `class="share-here"`) {
 		t.Error("erin's actions do not follow her rules")
 	}
 	if _, err := ta.svc.AddPolicy(auth.Subject("erin"), "/box/other.txt", auth.ActShare); err != nil {
 		t.Fatal(err)
 	}
-	if _, body = e.do(t, "GET", "/box/"); !strings.Contains(body, `data-item="other.txt" data-path="/box/other.txt" data-dir="false" data-rename="false" data-share="true" data-delete="false" aria-label="Share other.txt"`) {
+	if _, body = e.do(t, "GET", "/box/"); !strings.Contains(body, `data-item="other.txt" data-path="/box/other.txt" data-dir="false" data-rename="false" data-move="false" data-share="true" data-delete="false" aria-label="Share other.txt"`) {
 		t.Error("erin may not share what she may")
 	}
 	for role, want := range map[string]bool{"admin": true, "operator": false} {
@@ -314,7 +318,7 @@ func TestItemActions(t *testing.T) {
 			t.Errorf("selected entry lacks %s", want)
 		}
 	}
-	if _, body := f.as("operator").do(t, "GET", "/?item=a.txt"); strings.Contains(body, `<section class="card manage"`) {
-		t.Error("operator is shown the forms")
+	if _, body := f.as("user").do(t, "GET", "/?item=a.txt"); strings.Contains(body, `<section class="card manage"`) {
+		t.Error("user is shown the forms")
 	}
 }

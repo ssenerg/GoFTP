@@ -21,6 +21,9 @@
   {{with .Restored}}
   <div class="alert success banner" id="restored" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg><span>Restored <a href="{{.Href}}">{{.Name}}</a> from the trash.</span></div>
   {{end}}
+  {{with .Moved}}
+  <div class="alert success banner" id="moved" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg><span>{{.Verb}}{{if ne .N 1}} {{.N}} items{{end}} to <a href="{{.Href}}">{{.Name}}</a>.</span></div>
+  {{end}}
   {{if .Deleted}}
   <div class="alert success banner" id="deleted" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg>
     {{- if .Undo}}<span>Moved <strong>{{.Undo.Name}}</strong> to the trash.</span>
@@ -120,7 +123,7 @@
           <td class="name"><a href="{{.Href}}{{if .Preview}}?view{{end}}">{{if .Thumb}}<span class="thumb-box"><svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><img class="thumb" src="{{.Href}}?thumb" alt="" loading="lazy" decoding="async"></span>{{else}}<svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg>{{end}}<span>{{.Name}}</span></a></td>
           <td class="num">{{.Size}}</td>
           <td class="date"><time datetime="{{.ModISO}}">{{.ModTime}}</time></td>
-          {{if $.Manage}}<td class="act">{{if or .CanDelete .CanShare}}<a class="icon-btn" href="?item={{.Name}}" data-item="{{.Name}}" data-path="{{.Path}}" data-dir="{{.IsDir}}" data-rename="{{.CanRename}}" data-share="{{.CanShare}}" data-delete="{{.CanDelete}}" aria-label="{{.ActionsLabel}}" aria-haspopup="dialog" aria-expanded="false"><svg class="i" aria-hidden="true"><use href="#i-more"/></svg></a>{{end}}</td>{{end}}
+          {{if $.Manage}}<td class="act">{{if or .CanDelete .CanShare $.Copy}}<a class="icon-btn" href="?item={{.Name}}" data-item="{{.Name}}" data-path="{{.Path}}" data-dir="{{.IsDir}}" data-rename="{{.CanRename}}" data-move="{{$.Copy}}" data-share="{{.CanShare}}" data-delete="{{.CanDelete}}" aria-label="{{.ActionsLabel $.Copy}}" aria-haspopup="dialog" aria-expanded="false"><svg class="i" aria-hidden="true"><use href="#i-more"/></svg></a>{{end}}</td>{{end}}
         </tr>
         {{end}}
       </tbody>
@@ -152,6 +155,14 @@
   </label>
   <p class="popover-error" role="alert" hidden></p>
   <div class="popover-actions"><button type="submit" class="btn primary small">Rename</button></div>
+</form>
+<form method="post" action="{{.Action}}" class="item-form" data-kind="move"{{if not .CanCopy}} hidden{{end}}>
+  <input type="hidden" name="pick" value="{{.Name}}">
+  <label class="field"><span>Move or copy to the folder</span>
+    <input name="into" value="{{.Folder}}" required maxlength="4000" autocomplete="off" spellcheck="false" list="folders">
+  </label>
+  <p class="popover-error" role="alert" hidden></p>
+  <div class="popover-actions"><button type="submit" name="op" value="copy" class="btn small"><svg class="i" aria-hidden="true"><use href="#i-copy"/></svg>Copy</button><button type="submit" name="op" value="move" class="btn primary small"{{if not .CanDelete}} hidden{{end}}>Move</button></div>
 </form>
 <form method="post" action="/.shares/" class="item-form share-form" data-kind="share"{{if not .CanShare}} hidden{{end}}>
   <input type="hidden" name="action" value="create"><input type="hidden" name="path" value="{{.Path}}">

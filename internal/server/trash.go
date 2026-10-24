@@ -314,7 +314,7 @@ func (s *Server) purge(c fiber.Ctx, id string) error {
 			return s.deny(c)
 		}
 		if info.IsDir() {
-			switch _, err := s.checkTree(c, box, path.Base(note.Path), note.Path, note.Path); {
+			switch _, err := s.checkTree(c, box, path.Base(note.Path), note.Path, note.Path, auth.ActDelete); {
 			case errors.Is(err, errDenied):
 				return explain(fiber.ErrForbidden, "You may not delete everything in this folder.")
 			case errors.Is(err, errMounted):

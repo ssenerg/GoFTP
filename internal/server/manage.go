@@ -37,17 +37,25 @@ func (e *explained) Unwrap() error                  { return e.err }
 //	                    permanent=1 deletes it for good: a folder with
 //	                    everything in it
 //	rename=NAME&to=NEW  renames the entry NAME to NEW
+//	move=NAME&into=DIR  moves the entry NAME into the folder at the URL
+//	                    path DIR
+//	copy=NAME&into=DIR  copies it there
 //
-// delete may name several entries, which are handled in turn.
+// delete, move and copy may name several entries, which are handled in
+// turn. Forms that pick entries with checkboxes send them as pick=NAME,
+// and what to do with them as op=delete, op=move or op=copy.
 //
 // e.g. curl -d rename=a.txt -d to=b.txt https://host/dir/
 func (s *Server) manage(c fiber.Ctx, urlPath string) error {
 	// Visitors who may change nothing here are refused before the body is
-	// read.
+	// read; copying from here needs the right to add files elsewhere.
 	dir := object(urlPath, true)
 	ok, err := s.allowed(c, dir, auth.ActWrite)
 	if err == nil && !ok {
 		ok, err = s.allowed(c, dir, auth.ActDelete)
+	}
+	if err == nil && !ok && s.auth.MayWrite(visitorName(c)) {
+		ok, err = s.allowed(c, dir, auth.ActRead)
 	}
 	if err != nil {
 		return err
@@ -59,6 +67,15 @@ func (s *Server) manage(c fiber.Ctx, urlPath string) error {
 	if err != nil {
 		return err
 	}
+	if op := values.Get("op"); op != "" {
+		if !slices.Contains([]string{"delete", "move", "copy"}, op) {
+			return fiber.ErrBadRequest
+		}
+		if len(values["pick"]) == 0 {
+			return explain(fiber.ErrBadRequest, "Pick what to "+op+" first.")
+		}
+		values[op] = values["pick"]
+	}
 	if names, ok := values["folder"]; ok {
 		return s.mkdir(c, urlPath, names[0])
 	}
@@ -67,6 +84,12 @@ func (s *Server) manage(c fiber.Ctx, urlPath string) error {
 	}
 	if names, ok := values["rename"]; ok {
 		return s.rename(c, urlPath, names[0], values.Get("to"))
+	}
+	if names, ok := values["move"]; ok {
+		return s.relocate(c, urlPath, names, values.Get("into"), false)
+	}
+	if names, ok := values["copy"]; ok {
+		return s.relocate(c, urlPath, names, values.Get("into"), true)
 	}
 	return fiber.ErrBadRequest
 }
@@ -176,7 +199,7 @@ func (s *Server) remove(c fiber.Ctx, dirPath, name string, permanent bool) (stri
 	target := path.Join(dirPath, name)
 	contents := 0
 	if info.IsDir() {
-		contents, err = s.checkTree(c, dir, name, target, path.Join(realDir, name))
+		contents, err = s.checkTree(c, dir, name, target, path.Join(realDir, name), auth.ActDelete)
 		if err = s.treeError(err, "delete"); err != nil {
 			return "", err
 		}
@@ -219,11 +242,11 @@ func (s *Server) treeError(err error, verb string) error {
 	return s.openError(err)
 }
 
-// checkTree checks the folder name of dir before it is deleted with
-// everything in it: the visitor needs the right to delete every entry (at
-// its real path as well), nothing in it may be being written, and no other
-// file system may be mounted in it. It returns the number of entries.
-func (s *Server) checkTree(c fiber.Ctx, dir *os.Root, name, target, realTarget string) (int, error) {
+// checkTree checks the folder name of dir before it is deleted, or moved,
+// with everything in it: the visitor needs the rights acts on every entry
+// (at its real path as well), nothing in it may be being written, and no
+// other file system may be mounted in it. It returns the number of entries.
+func (s *Server) checkTree(c fiber.Ctx, dir *os.Root, name, target, realTarget string, acts ...string) (int, error) {
 	sub, err := dir.OpenRoot(name)
 	if err != nil {
 		return 0, err
@@ -253,11 +276,14 @@ func (s *Server) checkTree(c fiber.Ctx, dir *os.Root, name, target, realTarget s
 				return errBusy
 			}
 		}
-		ok, err := s.mayAt(c, auth.ActDelete, path.Join(target, p), path.Join(realTarget, p), d.IsDir())
-		if err == nil && !ok {
-			err = errDenied
+		for _, act := range acts {
+			if ok, err := s.mayAt(c, act, path.Join(target, p), path.Join(realTarget, p), d.IsDir()); err != nil {
+				return err
+			} else if !ok {
+				return errDenied
+			}
 		}
-		return err
+		return nil
 	})
 	return n, err
 }
@@ -295,6 +321,14 @@ func (s *Server) rename(c fiber.Ctx, dirPath, from, to string) error {
 				return err
 			}
 			defer release()
+		}
+		// What is in a folder gets new paths, where other rules may apply:
+		// it may only move if all of it could be read and deleted here.
+		if info.IsDir() {
+			_, err := s.checkTree(c, dir, from, src, path.Join(realDir, from), auth.ActRead, auth.ActDelete)
+			if err := s.treeError(err, "rename"); err != nil {
+				return err
+			}
 		}
 		if err := renameNoReplace(dir, from, to, info); errors.Is(err, errExists) {
 			return explain(fiber.ErrConflict, "Something with this name already exists here.")
@@ -454,6 +488,14 @@ func (s *Server) mayEither(c fiber.Ctx, act, urlPath string) (bool, error) {
 		ok, err = s.allowed(c, object(urlPath, true), act)
 	}
 	return ok, err
+}
+
+// visitorName names the signed-in user; "" for anonymous visitors.
+func visitorName(c fiber.Ctx) string {
+	if u := userOf(c); u != nil {
+		return u.Username
+	}
+	return ""
 }
 
 // visitor names the signed-in user, or anonymous, for the logs.

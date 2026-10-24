@@ -136,7 +136,11 @@ func (s *Service) MayShare(username string) bool { return s.mayAnywhere(username
 // MayDelete reports whether username may delete anything anywhere.
 func (s *Service) MayDelete(username string) bool { return s.mayAnywhere(username, ActDelete) }
 
-// mayAnywhere reports whether some rule lets username perform act.
+// MayWrite reports whether username may add files anywhere at all.
+func (s *Service) MayWrite(username string) bool { return s.mayAnywhere(username, ActWrite) }
+
+// mayAnywhere reports whether some rule, not a denial, lets username
+// perform act.
 func (s *Service) mayAnywhere(username, act string) bool {
 	for _, sub := range []string{Subject(username), Anonymous} {
 		perms, err := s.enforcer.GetImplicitPermissionsForUser(sub)
@@ -144,7 +148,7 @@ func (s *Service) mayAnywhere(username, act string) bool {
 			continue
 		}
 		for _, p := range perms {
-			if len(p) > 2 && (p[2] == act || p[2] == "*") {
+			if len(p) > 2 && !strings.HasPrefix(p[1], "!") && (p[2] == act || p[2] == "*") {
 				return true
 			}
 		}

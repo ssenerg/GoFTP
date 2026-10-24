@@ -261,6 +261,13 @@ type uploadRights struct{ create, replace bool }
 // under the real name; the lock file keeps concurrent uploads out. Without
 // replace, an existing name yields errExists.
 func (s *Server) receive(dir *os.Root, name string, body io.Reader, replace bool, rights uploadRights) (created bool, size int64, err error) {
+	return s.store(dir, name, body, replace, rights, s.copyUpload)
+}
+
+// store is receive with copy moving the data, which for uploads is limited
+// in size (copyUpload).
+func (s *Server) store(dir *os.Root, name string, body io.Reader, replace bool, rights uploadRights,
+	copy func(io.Writer, io.Reader) (int64, error)) (created bool, size int64, err error) {
 	tmp := tempPrefix + rand.Text() + tempSuffix
 	release, err := s.acquireLock(dir, name, tmp)
 	if err != nil {
@@ -278,7 +285,7 @@ func (s *Server) receive(dir *os.Root, name string, body io.Reader, replace bool
 	if err != nil {
 		return false, 0, err
 	}
-	size, err = s.copyUpload(f, body)
+	size, err = copy(f, body)
 	if err == nil {
 		err = f.Sync()
 	}
