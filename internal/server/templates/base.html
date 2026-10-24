@@ -125,6 +125,7 @@
     color: var(--muted);
     font-weight: 600;
     font-size: 14px;
+    white-space: nowrap;
   }
   .sections a:hover { background: var(--hover); color: var(--text); }
   .sections a[aria-current] { background: var(--accent-soft); color: var(--accent); }
@@ -644,8 +645,10 @@
     .topbar { height: 56px; padding: 0 14px; }
     .who, .menu .badge { display: none; }
     .topbar-start { gap: 12px; }
-    .sections a { padding: 0 10px; }
+    .sections a { padding: 0 7px; font-size: 13.5px; }
     .sections .i { display: none; }
+    /* Room for the tabs: the logo alone says what this is. */
+    .topbar-start:has(.sections) .brand-name, .menu .chev { display: none; }
     /* The toolbar's popovers open below their button, as wide as the
        toolbar: aligned to a button on the left, they would leave the
        screen. */
@@ -669,10 +672,11 @@
 {{define "topbar"}}
 <header class="topbar">
   <div class="topbar-start">
-    <a class="brand" href="{{with .Share}}{{.Root}}{{else}}/{{end}}"><svg class="logo" aria-hidden="true"><use href="#i-logo"/></svg>goftp</a>
-    {{if and .User (or .Shares .Trash) (not .Shared)}}
+    <a class="brand" href="{{with .Share}}{{.Root}}{{else}}/{{end}}" aria-label="goftp"><svg class="logo" aria-hidden="true"><use href="#i-logo"/></svg><span class="brand-name">goftp</span></a>
+    {{if and .User (or .Shares .Trash .MyFiles) (not .Shared)}}
     <nav class="sections" aria-label="Sections">
       <a href="/"{{if eq .Section "files"}} aria-current="true"{{end}}><svg class="i" aria-hidden="true"><use href="#i-folder"/></svg>Files</a>
+      {{with .MyFiles}}<a href="{{.}}"{{if eq $.Section "home"}} aria-current="true"{{end}}><svg class="i" aria-hidden="true"><use href="#i-home"/></svg>My files</a>{{end}}
       {{if .Shares}}<a href="/.shares/"{{if eq .Section "shared"}} aria-current="page"{{end}}><svg class="i" aria-hidden="true"><use href="#i-link"/></svg>Shared</a>{{end}}
       {{if .Trash}}<a href="/.trash/"{{if eq .Section "trash"}} aria-current="page"{{end}}><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Trash</a>{{end}}
     </nav>

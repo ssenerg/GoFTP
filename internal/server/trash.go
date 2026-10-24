@@ -49,6 +49,8 @@ type trashNote struct {
 	Dir  bool      `json:"dir"`
 	By   string    `json:"by"`
 	At   time.Time `json:"at"`
+	// Home is set for the home of a user who was deleted (see home.go).
+	Home bool `json:"home,omitempty"`
 }
 
 // trashed is an entry in the trash.
@@ -93,6 +95,12 @@ func (s *Server) openTrash(create bool) (*os.Root, error) {
 // the trash, and returns its ID there. The caller checked that it may be
 // deleted.
 func (s *Server) toTrash(c fiber.Ctx, dir *os.Root, name, realPath string, info fs.FileInfo) (string, error) {
+	return s.moveToTrash(dir, name, trashNote{Path: realPath, Dir: info.IsDir(), By: visitor(c), At: time.Now().UTC()})
+}
+
+// moveToTrash moves the entry name of dir to the trash with note, and
+// returns its ID there.
+func (s *Server) moveToTrash(dir *os.Root, name string, note trashNote) (string, error) {
 	trash, err := s.openTrash(true)
 	if err != nil {
 		return "", err
@@ -105,7 +113,7 @@ func (s *Server) toTrash(c fiber.Ctx, dir *os.Root, name, realPath string, info 
 	box, err := trash.OpenRoot(id)
 	if err == nil {
 		defer box.Close()
-		err = writeNote(box, trashNote{Path: realPath, Dir: info.IsDir(), By: visitor(c), At: time.Now().UTC()})
+		err = writeNote(box, note)
 	}
 	if err == nil {
 		err = renameBetween(dir, name, box, name)
@@ -242,8 +250,21 @@ func mayRestore(allow allowFunc, note trashNote) (restore, purge bool, err error
 	return restore, purge, err
 }
 
+// trashRights is mayRestore for the visitor of c. Superadmins may also
+// restore the home of a deleted user, for a user of that name, and delete
+// it for good, without seeing what is in it; home is set then.
+func (s *Server) trashRights(c fiber.Ctx, note trashNote) (restore, purge, home bool, err error) {
+	if note.Home && s.auth.IsSuperadmin(visitorName(c)) {
+		return true, true, true, nil
+	}
+	restore, purge, err = mayRestore(s.visitorRules(c), note)
+	return restore, purge, false, err
+}
+
 // restore puts the trashed entry id back where it was, and returns that
 // URL path. The folder it was in has to be there, and nothing of its name.
+// A home goes back to the user of its name, whose new home gives way if it
+// is empty.
 func (s *Server) restore(c fiber.Ctx, id string) (string, error) {
 	s.trashMu.Lock()
 	defer s.trashMu.Unlock()
@@ -253,7 +274,8 @@ func (s *Server) restore(c fiber.Ctx, id string) (string, error) {
 	}
 	defer trash.Close()
 	defer box.Close()
-	if ok, _, err := mayRestore(s.visitorRules(c), note); err != nil {
+	ok, _, home, err := s.trashRights(c, note)
+	if err != nil {
 		return "", err
 	} else if !ok {
 		if may, _ := mayBoth(s.visitorRules(c), auth.ActRead, note.Path, note.Path, note.Dir); !may {
@@ -262,6 +284,18 @@ func (s *Server) restore(c fiber.Ctx, id string) (string, error) {
 		return "", s.deny(c)
 	}
 	dirPath, name := path.Split(note.Path)
+	var owner *auth.User
+	if home {
+		ctx, cancel := dbContext(c)
+		owner, err = s.auth.UserNamed(ctx, name)
+		cancel()
+		if errors.Is(err, auth.ErrNotFound) {
+			return "", explain(fiber.ErrConflict, "Add the user "+name+" again first: a home goes back to its user.")
+		}
+		if err != nil {
+			return "", err
+		}
+	}
 	dir, realDir, err := s.uploadDir(dirPath)
 	if errors.Is(err, fiber.ErrNotFound) {
 		return "", explain(fiber.ErrConflict, "The folder it was in, "+path.Clean(dirPath)+", is gone: restore or create that first.")
@@ -272,7 +306,7 @@ func (s *Server) restore(c fiber.Ctx, id string) (string, error) {
 	defer dir.Close()
 	if ok, err := s.mayAt(c, auth.ActWrite, note.Path, path.Join(realDir, name), note.Dir); err != nil {
 		return "", err
-	} else if !ok {
+	} else if !ok && !home {
 		return "", s.deny(c)
 	}
 	// The lock keeps uploads of the name out meanwhile.
@@ -281,12 +315,27 @@ func (s *Server) restore(c fiber.Ctx, id string) (string, error) {
 		return "", err
 	}
 	defer release()
-	if err := moveNoReplace(box, name, dir, name, info); errors.Is(err, errExists) {
+	if home {
+		s.homeMu.Lock()
+		defer s.homeMu.Unlock()
+		if err := clearEmptyHome(dir, name); err != nil {
+			return "", err
+		}
+	}
+	if err := moveNoReplace(box, name, dir, name, info); errors.Is(err, errExists) && home {
+		return "", explain(fiber.ErrConflict, name+" has a home with files in it already, so the old one stays in the trash.")
+	} else if errors.Is(err, errExists) {
 		return "", explain(fiber.ErrConflict, "Something named "+name+" is there now: rename or delete it first.")
 	} else if err != nil {
 		return "", s.openError(err)
 	}
 	syncDir(dir)
+	if home {
+		if err := writeOwner(dir, name, owner.ID); err != nil {
+			return "", err
+		}
+		s.homesChecked.Delete(owner.ID)
+	}
 	_ = trash.RemoveAll(id)
 	s.log.Info("restore", zap.String("ip", c.IP()), zap.String("user", visitor(c)), zap.String("path", note.Path),
 		zap.Bool("folder", note.Dir))
@@ -305,7 +354,8 @@ func (s *Server) purge(c fiber.Ctx, id string) error {
 	defer trash.Close()
 	err = func() error {
 		defer box.Close()
-		if _, ok, err := mayRestore(s.visitorRules(c), note); err != nil {
+		_, ok, home, err := s.trashRights(c, note)
+		if err != nil {
 			return err
 		} else if !ok {
 			if may, _ := mayBoth(s.visitorRules(c), auth.ActRead, note.Path, note.Path, note.Dir); !may {
@@ -313,8 +363,13 @@ func (s *Server) purge(c fiber.Ctx, id string) error {
 			}
 			return s.deny(c)
 		}
+		// A home is deleted as a whole, by a superadmin.
+		acts := []string{auth.ActDelete}
+		if home {
+			acts = nil
+		}
 		if info.IsDir() {
-			switch _, err := s.checkTree(c, box, path.Base(note.Path), note.Path, note.Path, auth.ActDelete); {
+			switch _, err := s.checkTree(c, box, path.Base(note.Path), note.Path, note.Path, acts...); {
 			case errors.Is(err, errDenied):
 				return explain(fiber.ErrForbidden, "You may not delete everything in this folder.")
 			case errors.Is(err, errMounted):
@@ -337,6 +392,29 @@ func (s *Server) purge(c fiber.Ctx, id string) error {
 	s.log.Info("purge", zap.String("ip", c.IP()), zap.String("user", visitor(c)), zap.String("path", note.Path),
 		zap.Bool("folder", note.Dir))
 	return nil
+}
+
+// clearEmptyHome removes the home name of the folder of homes dir if it
+// holds nothing but its owner note, so that an old one can take its place.
+func clearEmptyHome(dir *os.Root, name string) error {
+	d, err := dir.Open(name)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	entries, err := d.ReadDir(-1)
+	_ = d.Close()
+	if err != nil {
+		return nil
+	}
+	for _, e := range entries {
+		if e.Name() != homeOwner {
+			return nil
+		}
+	}
+	return dir.RemoveAll(name)
 }
 
 // moveNoReplace moves the entry name of from to newName in to, unless
@@ -458,9 +536,11 @@ type trashItem struct {
 	Gone, GoneISO       string // when it is removed for good
 	CanRestore          bool
 	CanPurge            bool
+	Home                bool // of a deleted user
 }
 
-var trashNotices = map[string]string{"purged": "Deleted for good.", "emptied": "The trash was emptied."}
+var trashNotices = map[string]string{"purged": "Deleted for good.", "emptied": "The trash was emptied.",
+	"restored": "Restored: it is back where it was."}
 
 func (s *Server) trashPage(c fiber.Ctx) error {
 	if userOf(c) == nil {
@@ -486,9 +566,8 @@ func (s *Server) renderTrash(c fiber.Ctx, status int, notice, failure string) er
 		return err
 	}
 	data := trashData{page: s.page(c, "Trash"), Keep: keepText(s.cfg.Trash.Keep), Notice: notice, Error: failure}
-	allow := s.visitorRules(c)
 	for _, it := range items {
-		restore, purge, err := mayRestore(allow, it.trashNote)
+		restore, purge, _, err := s.trashRights(c, it.trashNote)
 		if err != nil {
 			return err
 		}
@@ -501,7 +580,7 @@ func (s *Server) renderTrash(c fiber.Ctx, status int, notice, failure string) er
 			Kind: kindOf(it.Path), Size: formatSize(it.size), By: it.By,
 			Deleted: it.At.Format("Jan 2, 2006 15:04") + " UTC", DeletedISO: it.At.Format(time.RFC3339),
 			Gone: gone.UTC().Format("Jan 2, 2006 15:04") + " UTC", GoneISO: gone.UTC().Format(time.RFC3339),
-			CanRestore: restore, CanPurge: purge}
+			CanRestore: restore, CanPurge: purge, Home: it.Home}
 		if it.Dir {
 			ti.Kind, ti.Size = "folder", "—"
 		}
@@ -534,6 +613,10 @@ func (s *Server) trashAction(c fiber.Ctx) error {
 			return s.trashError(c, err)
 		}
 		if html {
+			// Back to its folder, if the visitor may open it.
+			if ok, err := s.allowed(c, object(path.Dir(p), true), auth.ActRead); err != nil || !ok {
+				return s.redirect(c, trashPath+"?done=restored")
+			}
 			return s.redirect(c, escapePath(object(path.Dir(p), true))+"?restored="+url.QueryEscape(path.Base(p)))
 		}
 		c.Location(escapePath(p))
@@ -590,7 +673,7 @@ func (s *Server) emptyTrash(c fiber.Ctx) (int, error) {
 	}
 	n := 0
 	for _, it := range items {
-		if _, purge, err := mayRestore(s.visitorRules(c), it.trashNote); err != nil {
+		if _, purge, _, err := s.trashRights(c, it.trashNote); err != nil {
 			return n, err
 		} else if !purge {
 			continue

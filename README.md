@@ -5,7 +5,8 @@ A small resumable file server built on [Fiber v3](https://gofiber.io), with
 [Zap](https://github.com/uber-go/zap) logging, and users stored in
 Postgres whose access is decided by [Casbin](https://casbin.org) policies.
 
-- Users sign in with a password; roles decide what they may do.
+- Users sign in with a password; roles decide what they may do, and each
+  user has a private folder of their own (see [Personal folders](#personal-folders)).
 - Range (single and multipart), `If-Range`, `If-None-Match` and
   `If-Modified-Since` are supported, so downloads can be resumed.
 - Uploads never expose partial files (see [Uploads](#uploads)), and resume
@@ -72,7 +73,7 @@ goftp user add bob --role operator   # prints a temporary password
 goftp user list
 goftp user passwd bob                # new temporary password, ends bob's sessions
 goftp user role bob admin
-goftp user delete bob
+goftp user delete bob                # their home goes to the trash
 ```
 
 New and reset passwords are temporary: after signing in, users can do
@@ -126,6 +127,30 @@ A denial for a role applies to the roles above it too. Rules for longer
 paths still apply under a denial, also those of a user's roles: with both
 examples, bob may read the handbook. A denial cannot take away what the
 rules for `anonymous` allow, since anyone may sign out.
+
+## Personal folders
+
+Every user has a home, `/home/NAME/`, under **My files** in the top bar:
+a private folder where they may do anything (upload, create folders,
+delete, share links, also upload links) whatever their role, but delete
+the home itself. Nobody else may open it, nor `/home/` itself: not even
+admins and superadmins, and it is not listed under **Files**. A home is
+made the first time its user shows up. What its user deletes there goes
+to the trash, where only they see it.
+
+These rules are built in; rules for those paths come first, so a
+superadmin can still open homes up, e.g. `goftp policy add admin '/home/*' read`
+to let admins read them, or `goftp policy add user:bob '!/home/bob/*' write`
+to keep bob from adding files to his. `homes.path` (`GOFTP_HOMES_PATH`)
+moves them to another folder, or with `off` turns them off. The folder of
+homes may not be a symlink, and should be on the same disk as the rest.
+
+Deleting a user moves their home to the trash. Superadmins see it there,
+but not what is in it: they may delete it for good, or restore it once a
+user of that name exists again, for whom it then is (an empty home of
+theirs gives way). A hidden `.goftp-owner` file in each home notes whose it
+is, so a home that a deleted user left behind (say, the trash was off)
+goes to the trash before a new user of the same name gets in.
 
 ## Running without Docker
 
@@ -262,8 +287,8 @@ for `trash.keep` (30 days) and can be restored, or deleted for good; the
 folder's page also offers to undo it. The trash is the hidden folder
 `.goftp-trash` at the top of the served folder, so deleting and restoring
 take no time and no space. Restoring needs the folder it was in, and no
-entry of its name there. Entries on another disk than the trash, and
-anything when `trash.keep` is `0`, are deleted at once.
+entry of its name there. Entries on another disk than the trash can only
+be deleted for good, and when `trash.keep` is `0`, everything is.
 
 Deleting a folder deletes everything in it, and moving or renaming one
 moves everything in it. Both are refused while something in it is being
@@ -374,6 +399,9 @@ the admin rule is still the default one. To let others share, e.g. `goftp policy
   client's sign-in budget, and each link takes at most 20 password checks
   a minute. The cookie that remembers a password lasts at most
   `auth.session_ttl`.
+- Homes are private by built-in rules, which also hold against admins and
+  superadmins until a rule opens them up. A superadmin can still change
+  the rules, and whoever runs the server can read its files.
 - Upload links let whoever has them fill a folder, with files of up to
   `upload.max_size` each: give them a short life, a password, or a limit
   of files.

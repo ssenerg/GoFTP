@@ -58,6 +58,7 @@ type page struct {
 	Admin     bool   // may administer users and rules
 	Shares    bool   // may share links, or administers them
 	Trash     bool   // may delete, so the trash is of use
+	MyFiles   string // the visitor's home, if they have one
 	Section   string // the top bar's tab for the page: "files", "shared" or ""
 	Here      string
 	MinLength int
@@ -76,6 +77,13 @@ func (s *Server) page(c fiber.Ctx, title string) page {
 		p.Admin = s.auth.IsSuperadmin(u.Username)
 		p.Shares = p.Admin || s.auth.MayShare(u.Username)
 		p.Trash = s.cfg.Trash.Keep > 0 && (p.Admin || s.auth.MayDelete(u.Username))
+		if home := s.homeOf(u); home != "" {
+			p.MyFiles = escapePath(home + "/")
+			if urlPath, _, err := cleanPath(c.Path()); err == nil && inHome(home, urlPath) != "" {
+				p.Section = "home"
+				return p
+			}
+		}
 	}
 	switch {
 	case strings.HasPrefix(c.Path(), sharesPath):
@@ -279,6 +287,12 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 	}
 	data := listing{page: s.page(c, "All files"), Path: urlPath, Action: escapePath(object(urlPath, true)),
 		Home: "/", Crumbs: crumbs("", urlPath), Items: items, Summary: summaryOf(items)}
+	// In their home, the path starts there.
+	home := s.homeOf(userOf(c))
+	rel := inHome(home, urlPath)
+	if rel != "" {
+		data.Home, data.Crumbs = escapePath(home+"/"), crumbs(home, rel)
+	}
 	create, replace, err := s.uploadRightsAt(c, object(urlPath, true), object(realPath, true))
 	if err != nil {
 		return err
@@ -305,7 +319,10 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 	data.Sort, data.Desc = sortOrder(c)
 	sortItems(data.Items, data.Sort, data.Desc)
 
-	if urlPath != "/" {
+	switch {
+	case rel == "/":
+		data.Title = "My files"
+	case urlPath != "/":
 		data.Title = path.Base(urlPath)
 		data.Parent = escapePath(object(path.Dir(urlPath), true))
 	}
@@ -367,7 +384,7 @@ func (s *Server) deletedBanner(c fiber.Ctx, data *listing) error {
 	}
 	_ = box.Close()
 	_ = trash.Close()
-	if ok, _, err := mayRestore(s.visitorRules(c), note); err != nil || !ok {
+	if ok, _, _, err := s.trashRights(c, note); err != nil || !ok {
 		return err
 	}
 	data.Undo = &undo{ID: id, Name: path.Base(note.Path)}

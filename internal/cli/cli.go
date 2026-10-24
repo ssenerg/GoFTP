@@ -145,6 +145,11 @@ func openDB(cmd *cobra.Command) (*pgxpool.Pool, error) {
 
 // withService runs fn with a service backed by the configured database.
 func withService(cmd *cobra.Command, fn func(*auth.Service) error) error {
+	return withConfig(cmd, func(_ *config.Config, svc *auth.Service) error { return fn(svc) })
+}
+
+// withConfig is withService for commands that need the configuration too.
+func withConfig(cmd *cobra.Command, fn func(*config.Config, *auth.Service) error) error {
 	cfg, err := config.Load(cmd.Flags())
 	if err != nil {
 		return err
@@ -158,7 +163,7 @@ func withService(cmd *cobra.Command, fn func(*auth.Service) error) error {
 	if err != nil {
 		return err
 	}
-	return fn(auth.NewService(auth.NewPgStore(pool), enforcer, cfg.Auth.SessionTTL))
+	return fn(cfg, auth.NewService(auth.NewPgStore(pool), enforcer, cfg.Auth.SessionTTL))
 }
 
 func userCmd() *cobra.Command {
@@ -247,14 +252,23 @@ func userCmd() *cobra.Command {
 
 	del := &cobra.Command{
 		Use:   "delete NAME",
-		Short: "Delete a user, their policies and sessions",
+		Short: "Delete a user, their policies and sessions; their home goes to the trash",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withService(cmd, func(svc *auth.Service) error {
-				if err := svc.DeleteUser(cmd.Context(), args[0]); err != nil {
+			return withConfig(cmd, func(cfg *config.Config, svc *auth.Service) error {
+				name := auth.NormalizeUsername(args[0])
+				if err := svc.DeleteUser(cmd.Context(), name); err != nil {
 					return err
 				}
-				cmd.Printf("deleted user %s\n", auth.NormalizeUsername(args[0]))
+				cmd.Printf("deleted user %s\n", name)
+				// The server moves it there anyway once a user of that
+				// name shows up.
+				switch moved, err := server.TrashHome(cfg, "goftp user delete", name); {
+				case err != nil:
+					cmd.PrintErrf("their home stays private, but could not be moved to the trash: %v\n", err)
+				case moved:
+					cmd.Printf("moved their home to the trash\n")
+				}
 				return nil
 			})
 		},

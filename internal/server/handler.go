@@ -48,9 +48,12 @@ func (s *Server) handle(c fiber.Ctx) error {
 		defer f.Close()
 		return s.serveDir(c, f, urlPath, realPath, wantDir)
 	}
-	return s.serveFileAs(c, f, info, urlPath, realPath, fileAt{
-		rel: urlPath, page: func(title string) page { return s.page(c, title) }, allow: allow,
-	})
+	at := fileAt{rel: urlPath, page: func(title string) page { return s.page(c, title) }, allow: allow}
+	// In their home, the path starts there.
+	if home := s.homeOf(userOf(c)); inHome(home, urlPath) != "" {
+		at.base, at.rel = home, inHome(home, urlPath)
+	}
+	return s.serveFileAs(c, f, info, urlPath, realPath, at)
 }
 
 // lookup opens the folder or regular file at urlPath, if allow lets the

@@ -72,7 +72,7 @@
               <summary class="icon-btn" aria-label="Delete {{.Name}}" title="Delete"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg></summary>
               <form method="post" action="/.admin/users" class="popover">
                 <input type="hidden" name="action" value="delete"><input type="hidden" name="user" value="{{.Name}}">
-                <p>Delete <strong>{{.Name}}</strong> and their rules? This cannot be undone.</p>
+                <p>Delete <strong>{{.Name}}</strong> and their rules? This cannot be undone.{{if $.Homes}} Their home goes to the trash.{{end}}</p>
                 <div class="popover-actions"><button type="submit" class="btn danger small"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Delete</button></div>
               </form>
             </details>
@@ -88,6 +88,7 @@
     <h2>Add a rule</h2>
     <p class="muted">A rule lets someone do something on a path: <code>/docs/*</code> covers <code>/docs/</code> and everything below it, <code>/docs/</code> alone just that listing. Roles also have the rights of the roles after them: {{range $i, $r := .Roles}}{{if $i}} › {{end}}{{$r}}{{end}}. Signed-in users may always do what everyone may.</p>
     <p class="muted">A rule that someone <em>may not</em> keeps them out of a path that broader rules open. The rule for the longest path decides; for the same path, a user's own rules come before their roles', and “may not” before “may”.</p>
+    {{with .Homes}}<p class="muted">Built in: everyone may do anything in their home, <code>{{.}}/NAME/</code>, but delete it, and nobody may open <code>{{.}}/</code> or the homes of others. Rules here for those paths come first, e.g. <em>admin may read <code>{{.}}/*</code></em>.</p>{{end}}
     <form method="post" action="/.admin/rules" class="inline-form">
       <input type="hidden" name="action" value="add">
       <label class="field"><span>Who</span>

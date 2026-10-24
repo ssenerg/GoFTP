@@ -68,9 +68,31 @@ func TestUserCommands(t *testing.T) {
 		!regexp.MustCompile(`^bob\s+admin\s+temporary\s`).MatchString(lines[2]) {
 		t.Errorf("user list:\n%s", out)
 	}
-	mustRun(t, "user", "delete", "bob")
+	// Their home goes to the trash.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "home", "bob"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "home", "bob", "notes.txt"), []byte("bob's"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOFTP_DIR", dir)
+	if out := mustRun(t, "user", "delete", "bob"); !strings.Contains(out, "moved their home to the trash") {
+		t.Errorf("user delete: %q", out)
+	}
 	if out := mustRun(t, "user", "list"); strings.Contains(out, "bob") {
 		t.Errorf("deleted user listed:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "home", "bob")); !os.IsNotExist(err) {
+		t.Errorf("the home stayed: %v", err)
+	}
+	trashed, _ := filepath.Glob(filepath.Join(dir, ".goftp-trash", "*", "bob", "notes.txt"))
+	if len(trashed) != 1 {
+		t.Errorf("not in the trash: %v", trashed)
+	}
+	// Users without a home are deleted all the same.
+	if out := mustRun(t, "user", "delete", "alice"); strings.Contains(out, "home") {
+		t.Errorf("user delete without a home: %q", out)
 	}
 }
 

@@ -68,6 +68,16 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Trash.Keep != 30*24*time.Hour {
 		t.Errorf("unexpected trash config: %+v", cfg.Trash)
 	}
+	if cfg.Homes.Path != "/home" {
+		t.Errorf("unexpected homes config: %+v", cfg.Homes)
+	}
+	for in, want := range map[string]string{"/users/": "/users", "off": "", "/a/b": "/a/b"} {
+		t.Setenv("GOFTP_HOMES_PATH", in)
+		if cfg, err := load(); err != nil || cfg.Homes.Path != want {
+			t.Errorf("homes.path %q: %q, %v", in, cfg.Homes.Path, err)
+		}
+	}
+	t.Setenv("GOFTP_HOMES_PATH", "/home")
 
 	t.Setenv("GOFTP_CACHE_DIR", "/var/cache/goftp")
 	t.Setenv("GOFTP_CACHE_MAX_SIZE", "1GiB")
@@ -188,6 +198,9 @@ func TestLoadErrors(t *testing.T) {
 		{"negative max size", map[string]string{"GOFTP_UPLOAD_MAX_SIZE": "-1"}, nil, "invalid size"},
 		{"bad cache size", map[string]string{"GOFTP_CACHE_MAX_SIZE": "1XB"}, nil, "invalid size"},
 		{"negative trash", map[string]string{"GOFTP_TRASH_KEEP": "-1h"}, nil, "trash.keep must not be negative"},
+		{"homes at the top", map[string]string{"GOFTP_HOMES_PATH": "/"}, nil, "homes.path must be"},
+		{"relative homes", map[string]string{"GOFTP_HOMES_PATH": "home"}, nil, "homes.path must be"},
+		{"hidden homes", map[string]string{"GOFTP_HOMES_PATH": "/.home"}, nil, "homes.path must be"},
 		{"negative cache size", nil, []string{"--config", negativeCache}, "cache.max_size must not be negative"},
 		{"cache served", map[string]string{"GOFTP_CACHE_DIR": filepath.Join(dir, "thumbs")}, []string{"--dir", dir}, "cache.dir must be outside dir"},
 		{"cache is the dir", map[string]string{"GOFTP_CACHE_DIR": dir}, []string{"--dir", dir}, "cache.dir must be outside dir"},

@@ -32,7 +32,7 @@
         {{range .Items}}
         <tr>
           <td class="name"><span class="link-cell">
-            <span class="trash-name"><svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><span>{{.Name}}</span></span>
+            <span class="trash-name"><svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><span>{{.Name}}</span>{{if .Home}}<span class="chip" title="The home of a deleted user: restoring gives it to a user of that name">home</span>{{end}}</span>
             <span class="where">in <a href="{{.FolderHref}}">{{.Folder}}</a></span>
           </span></td>
           <td class="num">{{.Size}}</td>
