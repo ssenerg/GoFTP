@@ -162,7 +162,7 @@
           <summary class="btn small"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Delete</summary>
           <div class="popover">
             <p class="delete-note">{{if .TrashKeep}}Move what is ticked to the trash? It can be restored from there for {{.TrashKeep}}.{{else}}Delete what is ticked, folders with everything in them? This cannot be undone.{{end}}</p>
-            {{if .TrashKeep}}<label class="check"><input type="checkbox" name="permanent" value="1"> Delete it for good instead</label>{{end}}
+            {{if .TrashKeep}}<label class="check"><input type="checkbox" name="permanent" value="1"> Delete them for good instead</label>{{end}}
             <p class="popover-error" role="alert" hidden></p>
             <div class="popover-actions"><button type="submit" name="op" value="delete" class="btn danger small"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Delete</button></div>
           </div>
@@ -237,8 +237,8 @@
     <input type="password" name="password" minlength="8" maxlength="256" autocomplete="new-password" placeholder="None">
   </label>
 </div>
-<label class="field"><span>Stop after <span class="opt">(optional)</span></span>
-  <span class="share-limit"><input type="number" name="max_uses" min="1" max="1000000" inputmode="numeric" placeholder="Any number of"><span class="share-noun">downloads</span></span>
+<label class="field share-limit"><span><span class="share-noun">Downloads</span> allowed <span class="opt">(optional)</span></span>
+  <input type="number" name="max_uses" min="1" max="1000000" inputmode="numeric" placeholder="No limit">
 </label>
 <p class="popover-error" role="alert" hidden></p>
 <div class="popover-actions"><button type="submit" class="btn primary small"><svg class="i" aria-hidden="true"><use href="#i-link"/></svg>Create link</button></div>

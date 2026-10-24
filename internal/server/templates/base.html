@@ -342,7 +342,7 @@
   .popover input { height: 38px; }
   .popover-error { color: var(--danger); font-size: 13px; }
   .popover-actions { display: flex; justify-content: flex-end; gap: 8px; }
-  .files tbody tr.new td, .files tbody tr.selected td, .files tbody tr.picked td { background: var(--accent-soft); }
+  .files tbody tr.new td, .files tbody tr.selected td, .files tbody tr.ticked td { background: var(--accent-soft); }
   .files th.pick, .files td.pick { width: 44px; padding: 0 0 0 16px; }
   .files td.pick input, .files th.pick input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); vertical-align: middle; }
   .picked {
@@ -396,9 +396,8 @@
   .form-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--muted); }
   .share-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 10px; }
   .share-row select, .share-kind select { height: 38px; width: 100%; }
-  .share-limit { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; }
-  .share-limit input { width: 130px; flex: none; }
-  .dropbox { align-items: stretch; text-align: center; }
+  .share-limit input { width: calc(40% - 4px); }
+  .share-card.dropbox { align-items: stretch; }
   .dropbox > .share-icon { align-self: center; }
   .dropbox .upload, .dropbox .transfers { margin: 8px 0 0; text-align: left; }
   .dropbox .alert { text-align: left; }
@@ -423,7 +422,7 @@
   .link-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .link-cell a { display: inline-flex; align-items: center; gap: 10px; color: var(--text); font-weight: 500; overflow-wrap: anywhere; }
   .link-cell .where { color: var(--faint); font-size: 12.5px; padding-left: 30px; overflow-wrap: anywhere; }
-  .link-cell .where a { display: inline; color: var(--muted); font-weight: 400; }
+  .files td.name .where a { display: inline; color: var(--muted); font-weight: 400; }
   .trash-name { display: inline-flex; align-items: center; gap: 10px; font-weight: 500; overflow-wrap: anywhere; }
   form.inline { display: inline-block; margin: 0 4px 0 0; vertical-align: middle; }
   .thumb-box { position: relative; display: inline-grid; place-items: center; flex: none; width: 22px; height: 22px; }

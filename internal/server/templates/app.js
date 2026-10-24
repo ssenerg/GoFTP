@@ -180,7 +180,7 @@
     const noun = $(".share-noun", form);
     const kind = form.elements.kind;
     kind.addEventListener("change", () => {
-      noun.textContent = kind.value === "upload" ? "files sent" : "downloads";
+      noun.textContent = kind.value === "upload" ? "Files" : "Downloads";
     });
     form.addEventListener("submit", async e => {
       e.preventDefault();
@@ -488,7 +488,7 @@
     let last = null;
     const update = () => {
       const n = boxes.filter(b => b.checked).length;
-      for (const b of boxes) b.closest("tr").classList.toggle("picked", b.checked);
+      for (const b of boxes) b.closest("tr").classList.toggle("ticked", b.checked);
       picked.hidden = n === 0;
       count.textContent = `${n} picked`;
       clear.hidden = n === 0;
@@ -524,6 +524,7 @@
       box.addEventListener("toggle", () => {
         if (!box.open) return;
         for (const other of pops) if (other !== box) other.open = false;
+        place($(".popover", box));
         const field = $("input[name=into]", box) || $("button[type=submit]", box);
         field.focus();
       });
