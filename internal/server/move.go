@@ -252,10 +252,10 @@ func (s *Server) copyFolder(dst *os.Root, name, urlPath, realPath, dstPath, real
 
 // copyTree copies what the folder at urlPath (really at realPath) holds that
 // allow lets the visitor read into the folder dst, at dstPath (really at
-// realDst), and what the folders in it hold in turn. ancestors are the real
-// paths of the folders being copied. Without dst, it only checks that the
-// visitor may create all of it there (errDenied). It returns how many
-// entries it copied, or would.
+// realDst), and what the folders in it hold in turn, if the visitor may
+// create each copy there (errDenied otherwise). ancestors are the real
+// paths of the folders being copied. Without dst, it only checks. It
+// returns how many entries it copied, or would.
 func (s *Server) copyTree(dst *os.Root, urlPath, realPath, dstPath, realDst string, allow allowFunc, ancestors []string) (int, error) {
 	items, err := s.readable(urlPath, realPath, allow)
 	if err != nil {
@@ -267,12 +267,11 @@ func (s *Server) copyTree(dst *os.Root, urlPath, realPath, dstPath, realDst stri
 			continue
 		}
 		target, realTarget := path.Join(dstPath, it.Name), path.Join(realDst, it.Name)
-		if dst == nil {
-			if ok, err := mayBoth(allow, auth.ActWrite, target, realTarget, it.IsDir); err != nil {
-				return n, err
-			} else if !ok {
-				return n, errDenied
-			}
+		// Checked again while copying, for what appeared since.
+		if ok, err := mayBoth(allow, auth.ActWrite, target, realTarget, it.IsDir); err != nil {
+			return n, err
+		} else if !ok {
+			return n, errDenied
 		}
 		n++
 		switch {

@@ -181,10 +181,11 @@ func TestLinkLimits(t *testing.T) {
 	if !strings.Contains(body, "0 of 2 downloads<span class=\"faint\">, never opened") {
 		t.Errorf("fresh link: %s", body)
 	}
-	// Its page, HEAD requests and parts from later on do not count.
-	for _, req := range [][]string{{"GET", "/"}, {"HEAD", "/a.txt"}, {"GET", "/a.txt", "Range", "bytes=5-"}} {
+	// Its page, previews, HEAD requests and parts from later on do not
+	// count.
+	for _, req := range [][]string{{"GET", "/"}, {"GET", "/a.txt?inline"}, {"HEAD", "/a.txt"}, {"GET", "/a.txt", "Range", "bytes=5-"}} {
 		resp, _ := anon.do(t, req[0], link+req[1], req[2:]...)
-		if resp.StatusCode >= 300 {
+		if resp.StatusCode >= 300 && resp.StatusCode != http.StatusUnsupportedMediaType {
 			t.Errorf("%v: %d", req, resp.StatusCode)
 		}
 	}

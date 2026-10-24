@@ -212,11 +212,12 @@ func (s *Server) share(c fiber.Ctx) (*auth.Share, *shareView, string, bool, erro
 }
 
 // useLink counts a download through the link sh, if the request is one: of
-// a file's content from its start, or of a zip. A link used as often as it
-// may be is refused from then on.
+// a file's content from its start, or of a zip. Showing a file in the
+// browser is not, so the link's own page does not use it up. A link used
+// as often as it may be is refused from then on.
 func (s *Server) useLink(c fiber.Ctx, sh *auth.Share) error {
 	q := c.Request().URI().QueryArgs()
-	if c.Method() == fiber.MethodHead || q.Has("thumb") {
+	if c.Method() == fiber.MethodHead || q.Has("thumb") || q.Has("inline") {
 		return nil
 	}
 	if r := strings.TrimSpace(c.Get(fiber.HeaderRange)); r != "" && !strings.HasPrefix(r, "bytes=0-") {

@@ -320,8 +320,8 @@ box: its page takes files, resumably, and shows nothing of what is in the
 folder. A name that is taken gets a number (`report (2).pdf`), so senders
 learn nothing of what is there. It works while its creator may add files
 there and share the folder. A link can also stop after a number of
-downloads (of a file from its start, or of a zip), or for upload links of
-files sent.
+downloads (of a file from its start, or of a zip; showing it in the
+browser does not count), or for upload links of files sent.
 
 A link never gives more than its creator may still read and share: it
 stops working when they lose those rights, or when what it leads to is
