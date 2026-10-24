@@ -51,6 +51,11 @@ func (s *Service) CreateUser(ctx context.Context, username, role string) (string
 	return password, nil
 }
 
+// UserNamed returns the user username (ErrNotFound if there is none).
+func (s *Service) UserNamed(ctx context.Context, username string) (*User, error) {
+	return s.user(ctx, username)
+}
+
 func (s *Service) user(ctx context.Context, username string) (*User, error) {
 	u, err := s.store.UserByName(ctx, NormalizeUsername(username))
 	if errors.Is(err, ErrNotFound) {

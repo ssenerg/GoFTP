@@ -176,8 +176,11 @@ func (s *Service) MayDelete(username string) bool { return s.mayAnywhere(usernam
 func (s *Service) MayWrite(username string) bool { return s.mayAnywhere(username, ActWrite) }
 
 // mayAnywhere reports whether some rule, not a denial, lets username
-// perform act.
+// perform act. Users with a home may do anything there.
 func (s *Service) mayAnywhere(username, act string) bool {
+	if username != "" && s.Homes() != "" {
+		return true
+	}
 	for _, sub := range []string{Subject(username), Anonymous} {
 		perms, err := s.enforcer.GetImplicitPermissionsForUser(sub)
 		if err != nil {

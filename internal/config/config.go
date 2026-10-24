@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/netip"
+	"path"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -28,6 +29,7 @@ type Config struct {
 	Upload   UploadConfig   `mapstructure:"upload"`
 	Cache    CacheConfig    `mapstructure:"cache"`
 	Trash    TrashConfig    `mapstructure:"trash"`
+	Homes    HomesConfig    `mapstructure:"homes"`
 }
 
 type DatabaseConfig struct {
@@ -83,6 +85,13 @@ type CacheConfig struct {
 type TrashConfig struct {
 	// Keep is how long; 0 deletes them at once, and empties the trash.
 	Keep time.Duration `mapstructure:"keep"`
+}
+
+// HomesConfig gives every user a private folder of their own.
+type HomesConfig struct {
+	// Path is the URL path of the folder that holds them, as
+	// Path/NAME; "" or "off" turns them off.
+	Path string `mapstructure:"path"`
 }
 
 // ByteSize is a size in bytes; config values may use units such as "10GiB".
@@ -195,6 +204,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("upload.max_size", 0)
 	v.SetDefault("upload.resume_window", 24*time.Hour)
 	v.SetDefault("trash.keep", 30*24*time.Hour)
+	v.SetDefault("homes.path", "/home")
 	v.SetDefault("cache.dir", "")
 	v.SetDefault("cache.max_size", 512<<20)
 }
@@ -267,6 +277,15 @@ func (c *Config) normalize() error {
 	}
 	if c.Trash.Keep < 0 {
 		errs = append(errs, errors.New("trash.keep must not be negative"))
+	}
+	if h := strings.TrimSpace(c.Homes.Path); h == "" || h == "off" {
+		c.Homes.Path = ""
+	} else {
+		clean := path.Clean("/" + strings.Trim(h, "/"))
+		if !strings.HasPrefix(h, "/") || clean == "/" || strings.Contains(clean, "/.") || strings.ContainsAny(clean, "*\\") {
+			errs = append(errs, errors.New(`homes.path must be a folder's URL path such as "/home", not "/" or a dot folder`))
+		}
+		c.Homes.Path = clean
 	}
 	if c.Cache.MaxSize < 0 {
 		errs = append(errs, errors.New("cache.max_size must not be negative"))

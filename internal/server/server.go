@@ -50,6 +50,10 @@ type Server struct {
 	trashMu sync.Mutex
 	// touched notes when links were last noted as used, by ID.
 	touched sync.Map
+	// homesChecked holds the IDs of users whose home was claimed (see
+	// claimHome); homeMu orders the claims.
+	homesChecked sync.Map
+	homeMu       sync.Mutex
 	// proxyNoted is set once untrusted proxy headers have been logged.
 	proxyNoted atomic.Bool
 
@@ -78,6 +82,11 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 		root:      root,
 		rootPath:  rootPath,
 		errEscape: escapeError(root),
+	}
+	authSvc.SetHomes(cfg.Homes.Path)
+	if err := s.checkHomes(); err != nil {
+		_ = root.Close()
+		return nil, err
 	}
 
 	s.app = fiber.New(fiber.Config{

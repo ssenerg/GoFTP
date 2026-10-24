@@ -29,6 +29,7 @@ type adminPage struct {
 	Notice   string
 	Error    string
 	Secret   *secret // a temporary password, shown once
+	Homes    string  // the folder of homes, whose rules are built in
 }
 
 type adminUser struct {
@@ -58,6 +59,7 @@ type secret struct {
 var adminNotices = map[string]string{
 	"role":         "The role was changed.",
 	"deleted":      "The user was deleted.",
+	"deleted-home": "The user was deleted. Their home went to the trash, where a superadmin can restore it for them.",
 	"rule-added":   "The rule was added.",
 	"rule-removed": "The rule was removed.",
 }
@@ -142,6 +144,17 @@ func (s *Server) usersAction(c fiber.Ctx) error {
 			return s.adminFailure(c, "users", err)
 		}
 		s.logAdmin(c, "user deleted", zap.String("target", name))
+		// Nothing of it may reach a new user of the same name.
+		moved, err := s.trashHomeOf(me, name)
+		if err != nil {
+			s.log.Error("move home to the trash", zap.String("user", name), zap.Error(err))
+			return s.renderAdmin(c, fiber.StatusOK, "users", "", "The user was deleted, but their home could not be moved to the trash: "+
+				"it stays private, and goes there once a user of that name signs in.", nil)
+		}
+		if moved {
+			s.logAdmin(c, "home moved to the trash", zap.String("target", name))
+			return s.redirect(c, usersPath+"?done=deleted-home")
+		}
 		return s.redirect(c, usersPath+"?done=deleted")
 	}
 	return fiber.ErrBadRequest
@@ -217,7 +230,7 @@ func (s *Server) logAdmin(c fiber.Ctx, msg string, fields ...zap.Field) {
 
 func (s *Server) renderAdmin(c fiber.Ctx, status int, tab, notice, failure string, shown *secret) error {
 	data := adminPage{
-		page: s.page(c, "Administration"), Tab: tab, Roles: auth.Roles,
+		page: s.page(c, "Administration"), Tab: tab, Roles: auth.Roles, Homes: s.cfg.Homes.Path,
 		Actions: append(slices.Clone(auth.Actions), "*"),
 		Notice:  notice, Error: failure, Secret: shown,
 	}

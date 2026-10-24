@@ -107,6 +107,9 @@ func (s *Server) search(c fiber.Ctx) error {
 
 	data := searchData{page: s.page(c, "Search"), Query: query, In: inPath, InName: shareName(inPath),
 		InHref: escapePath(object(inPath, true)), Searched: len(words) > 0}
+	if inHome(s.homeOf(userOf(c)), inPath) == "/" {
+		data.InName = "My files"
+	}
 	if query != "" {
 		data.Title = query + " · Search"
 	}

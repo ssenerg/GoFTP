@@ -113,3 +113,93 @@ func TestDenyRules(t *testing.T) {
 		}
 	})
 }
+
+// Everyone may do anything in their own home and nobody may open the
+// others, unless rules for those paths say otherwise.
+func TestHomeRules(t *testing.T) {
+	services(t, func(t *testing.T, svc *auth.Service) {
+		for name, role := range map[string]string{"alice": "user", "adam": "admin", "sam": "superadmin", "olga": "operator"} {
+			if _, err := svc.Enforcer().AddRoleForUser(auth.Subject(name), role); err != nil {
+				t.Fatal(err)
+			}
+		}
+		check := func(cases []struct {
+			who, obj, act string
+			want          bool
+		}) {
+			t.Helper()
+			for _, c := range cases {
+				var u *auth.User
+				if c.who != "" {
+					u = &auth.User{Username: c.who}
+				}
+				if got, err := svc.Allowed(u, c.obj, c.act); got != c.want || err != nil {
+					t.Errorf("%q %s %s = %v, %v; want %v", c.who, c.act, c.obj, got, err, c.want)
+				}
+			}
+		}
+		svc.SetHomes("/home")
+		if svc.HomeOf("alice") != "/home/alice" || svc.Homes() != "/home" {
+			t.Errorf("HomeOf %q, Homes %q", svc.HomeOf("alice"), svc.Homes())
+		}
+		check([]struct {
+			who, obj, act string
+			want          bool
+		}{
+			{"alice", "/home/alice/", "read", true},
+			{"alice", "/home/alice/a.txt", "write", true},
+			{"alice", "/home/alice/sub/", "delete", true},
+			{"alice", "/home/alice/", "delete", false},
+			{"alice", "/home/alice/a.txt", "share", true},
+			{"alice", "/home/alice/a.txt", "overwrite", true},
+			{"alice", "/home/olga/a.txt", "read", false},
+			{"alice", "/home/", "read", false},
+			{"alice", "/homes/a.txt", "read", true},
+			{"alice", "/docs/a.txt", "read", true},
+			{"alice", "/docs/a.txt", "write", false},
+			{"adam", "/home/alice/a.txt", "read", false},
+			{"sam", "/home/alice/a.txt", "read", false},
+			{"sam", "/home/sam/a.txt", "write", true},
+			{"", "/home/alice/a.txt", "read", false},
+		})
+		if !svc.MayWrite("alice") || !svc.MayShare("alice") || !svc.MayDelete("alice") || svc.MayWrite("") {
+			t.Error("users with a home may not write, share and delete somewhere")
+		}
+
+		// Rules decide over the built-in ones, also for the same paths.
+		for _, rule := range [][3]string{
+			{"admin", "/home/*", "read"},
+			{"user:alice", "!/home/alice/locked/*", "*"},
+			{"user:olga", "!/home/olga/*", "delete"},
+		} {
+			if _, err := svc.AddPolicy(rule[0], rule[1], rule[2]); err != nil {
+				t.Fatal(err)
+			}
+		}
+		check([]struct {
+			who, obj, act string
+			want          bool
+		}{
+			{"adam", "/home/alice/a.txt", "read", true},
+			{"adam", "/home/alice/a.txt", "write", false},
+			{"sam", "/home/alice/a.txt", "read", true},
+			{"alice", "/home/alice/locked/a.txt", "read", false},
+			{"alice", "/home/alice/a.txt", "read", true},
+			{"olga", "/home/olga/a.txt", "delete", false},
+			{"olga", "/home/olga/a.txt", "write", true},
+		})
+
+		// Without homes, the roles decide.
+		svc.SetHomes("")
+		check([]struct {
+			who, obj, act string
+			want          bool
+		}{
+			{"alice", "/home/olga/a.txt", "read", true},
+			{"alice", "/home/alice/a.txt", "write", false},
+		})
+		if svc.HomeOf("alice") != "" || svc.MayWrite("alice") {
+			t.Error("homes are still on")
+		}
+	})
+}

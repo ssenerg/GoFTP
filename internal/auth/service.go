@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/casbin/casbin/v3"
@@ -40,6 +41,8 @@ type Service struct {
 	hashing   chan struct{}
 	dummyOnce sync.Once
 	dummy     string
+
+	homes atomic.Value // the folder of users' homes (see SetHomes)
 }
 
 func NewService(store Store, enforcer *casbin.SyncedEnforcer, sessionTTL time.Duration) *Service {

@@ -459,6 +459,11 @@ func (s *Server) visitorRules(c fiber.Ctx) allowFunc {
 		return r.allow
 	}
 	allow := s.rulesOf(u)
+	// A home someone else left behind must not reach u.
+	if err := s.claimHome(u); err != nil {
+		s.log.Error("claim home", zap.String("user", u.Username), zap.Error(err))
+		allow = func(string, string) (bool, error) { return false, err }
+	}
 	c.Locals(rulesKey, cached{u, allow})
 	return allow
 }
