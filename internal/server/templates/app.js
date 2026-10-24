@@ -505,7 +505,8 @@
 
   // Uploads: files chosen or dropped anywhere on the page are sent one by
   // one, with progress. They resume after a lost connection, and after a
-  // reload once the same file is chosen again.
+  // reload once the same file is chosen again. Folders are created first,
+  // with the files in them going into them.
   const form = $("#upload");
   if (!form) return;
   const picker = $("input[type=file]", form);
@@ -578,9 +579,9 @@
   // uploads are remembered per file in this browser.
   const folder = form.getAttribute("action");
   const part = 64 << 20;
-  const storePrefix = "goftp-upload\n" + folder + "\n";
+  const storePrefix = dir => "goftp-upload\n" + dir + "\n";
   const store = {
-    key: (file, replacing) => storePrefix + [file.name, file.size, file.lastModified, replacing ? 1 : 0].join("\n"),
+    key: (file, replacing, dir) => storePrefix(dir) + [file.name, file.size, file.lastModified, replacing ? 1 : 0].join("\n"),
     get(key) {
       try { return JSON.parse(localStorage.getItem(key)); } catch { return null; }
     },
@@ -591,7 +592,7 @@
       try { localStorage.removeItem(key); } catch { /* storage disabled */ }
     },
     keys() {
-      try { return Object.keys(localStorage).filter(k => k.startsWith(storePrefix)); } catch { return []; }
+      try { return Object.keys(localStorage).filter(k => k.startsWith(storePrefix(folder))); } catch { return []; }
     },
   };
   const base64 = s => btoa(Array.from(new TextEncoder().encode(s), b => String.fromCharCode(b)).join(""));
@@ -640,14 +641,15 @@
     tick();
   });
 
-  // send uploads file and resolves with whether it was stored.
-  const send = async file => {
+  // send uploads file into the folder at the URL dir, showing it as label,
+  // and resolves with whether it was stored.
+  const send = async (file, dir, label) => {
     const replacing = Boolean(replace && replace.checked);
-    const key = store.key(file, replacing);
+    const key = store.key(file, replacing, dir);
     for (const r of $$(".transfer.paused", panel)) {
       if (r.dataset.key === key) r.remove();
     }
-    const t = row(file.name, human(file.size), "clock");
+    const t = row(label, human(file.size), "clock");
     const bar = document.createElement("progress");
     bar.max = 1;
     bar.value = 0;
@@ -689,7 +691,7 @@
       const patching = url && offset !== null;
       if (!url) {
         const meta = "filename " + base64(file.name) + (replacing ? ",replace " + base64("1") : "");
-        res = await request(t, "POST", folder, { "Upload-Length": String(file.size), "Upload-Metadata": meta });
+        res = await request(t, "POST", dir, { "Upload-Length": String(file.size), "Upload-Metadata": meta });
         if (res.status === 201) {
           url = new URL(res.getResponseHeader("Location"), location.href).pathname;
           if (file.size === 0) return finish(true);
@@ -774,14 +776,57 @@
     }
   })();
 
-  const upload = async files => {
-    if (!files.length) return;
+  // folderAt creates the folders on the way to the path dirs below this
+  // one, unless they exist, and resolves with the last one's URL, or with
+  // the status that stopped it. made remembers the folders of one upload.
+  const folderAt = (dirs, made) => {
+    if (!dirs.length) return Promise.resolve({ url: folder });
+    const key = dirs.join("/");
+    if (!made.has(key)) {
+      made.set(key, (async () => {
+        const parent = await folderAt(dirs.slice(0, -1), made);
+        if (!parent.url) return parent;
+        const name = dirs[dirs.length - 1];
+        let status = 0;
+        try {
+          status = (await fetch(parent.url, { method: "POST", body: new URLSearchParams({ folder: name }) })).status;
+        } catch {
+          status = 0;
+        }
+        // 409: it exists already, and what goes into it is added.
+        if (status !== 201 && status !== 409) return { status };
+        return { url: parent.url + encodeURIComponent(name) + "/" };
+      })());
+    }
+    return made.get(key);
+  };
+
+  // upload sends items, files with the folders they go into ({file, dirs}),
+  // after creating the folders in folders, which may be empty.
+  const upload = async (items, folders = []) => {
+    if (!items.length && !folders.length) return;
     const banner = $("#uploaded");
     if (banner) banner.remove();
-    active += files.length;
+    active += items.length;
     heading();
-    for (const file of files) {
-      const ok = await send(file);
+    const made = new Map();
+    for (const dirs of folders) {
+      const at = await folderAt(dirs, made);
+      if (!at.url) {
+        row(dirs.join("/") + "/", reason(at.status), "alert").r.classList.add("failed");
+        failed++;
+        heading();
+      }
+    }
+    for (const { file, dirs } of items) {
+      const at = await folderAt(dirs, made);
+      const label = [...dirs, file.name].join("/");
+      let ok = false;
+      if (at.url) {
+        ok = await send(file, at.url, label);
+      } else {
+        row(label, reason(at.status), "alert").r.classList.add("failed");
+      }
       active--;
       if (ok) done++;
       else failed++;
@@ -793,8 +838,35 @@
   picker.addEventListener("change", () => {
     const files = [...picker.files];
     picker.value = "";
-    upload(files);
+    upload(files.map(file => ({ file, dirs: [] })));
   });
+
+  // Choosing a folder: its files say where in it they are. Dotfiles,
+  // which the server refuses, are left out.
+  const folders = form.dataset.folders === "true";
+  const folderPicker = $(".folder-picker", form);
+  const skipped = n => {
+    if (!n) return;
+    row(`${n} hidden file${n === 1 ? "" : "s"} left out`, "Names starting with a dot are not uploaded.", "alert");
+    heading();
+  };
+  if (folders && folderPicker && "webkitdirectory" in folderPicker) {
+    const button = $(".dz-folder", form);
+    button.hidden = false;
+    button.addEventListener("click", () => folderPicker.click());
+    folderPicker.addEventListener("change", () => {
+      const items = [];
+      let hidden = 0;
+      for (const file of folderPicker.files) {
+        const parts = (file.webkitRelativePath || file.name).split("/");
+        if (parts.some(p => p.startsWith("."))) hidden++;
+        else items.push({ file, dirs: parts.slice(0, -1) });
+      }
+      folderPicker.value = "";
+      skipped(hidden);
+      upload(items);
+    });
+  }
 
   addEventListener("beforeunload", e => {
     if (active) e.preventDefault();
@@ -817,23 +889,57 @@
   document.addEventListener("dragover", e => {
     if (carriesFiles(e)) e.preventDefault();
   });
-  document.addEventListener("drop", e => {
+  // Dropped folders are read entry by entry; the browser hands them out
+  // in batches.
+  const entriesOf = dir => new Promise(resolve => {
+    const reader = dir.createReader();
+    const all = [];
+    const next = () => reader.readEntries(batch => {
+      if (!batch.length) return resolve(all);
+      all.push(...batch);
+      next();
+    }, () => resolve(all));
+    next();
+  });
+  const fileOf = entry => new Promise(resolve => entry.file(resolve, () => resolve(null)));
+  // walk gathers the files and folders of the dropped entry, which is in
+  // the folders dirs of what was dropped, and counts the dotfiles left out.
+  const walk = async (entry, dirs, found) => {
+    if (entry.name.startsWith(".")) {
+      found.hidden++;
+    } else if (entry.isFile) {
+      const file = await fileOf(entry);
+      if (file) found.items.push({ file, dirs });
+    } else if (entry.isDirectory) {
+      const here = [...dirs, entry.name];
+      found.folders.push(here);
+      for (const e of await entriesOf(entry)) await walk(e, here, found);
+    }
+  };
+
+  document.addEventListener("drop", async e => {
     if (!carriesFiles(e)) return;
     e.preventDefault();
     depth = 0;
     overlay.hidden = true;
-    const files = [];
+    const found = { items: [], folders: [], hidden: 0 };
+    // The entries have to be taken before the event ends.
+    const entries = [];
     for (const item of e.dataTransfer.items) {
       const entry = item.webkitGetAsEntry && item.webkitGetAsEntry();
-      if (entry && entry.isDirectory) {
-        row(entry.name, "Folders cannot be uploaded; drop the files inside it.", "alert").r.classList.add("failed");
+      if (entry && entry.isDirectory && !folders) {
+        row(entry.name, "Folders cannot be uploaded here; drop the files inside it.", "alert").r.classList.add("failed");
         failed++;
         heading();
+      } else if (entry && entry.isDirectory) {
+        entries.push(entry);
       } else if (item.kind === "file") {
         const f = item.getAsFile();
-        if (f) files.push(f);
+        if (f) found.items.push({ file: f, dirs: [] });
       }
     }
-    upload(files);
+    for (const entry of entries) await walk(entry, [], found);
+    skipped(found.hidden);
+    upload(found.items, found.folders);
   });
 })();

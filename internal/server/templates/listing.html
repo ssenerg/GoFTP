@@ -74,15 +74,17 @@
   </div>
 
   {{with .Upload}}
-  <form id="upload" class="upload" method="post" enctype="multipart/form-data" action="{{.Action}}">
+  <form id="upload" class="upload" method="post" enctype="multipart/form-data" action="{{.Action}}"{{if $.Mkdir}} data-folders="true"{{end}}>
     <div class="dropzone">
       <input type="file" name="file" multiple required aria-label="Choose files to upload">
       <span class="dz-icon" aria-hidden="true"><svg class="i"><use href="#i-upload"/></svg></span>
       <div class="dz-text">
-        <p class="pointer"><strong>Drop files here</strong> or click to choose them</p>
+        <p class="pointer"><strong>Drop files{{if $.Mkdir}} or folders{{end}} here</strong> or click to choose files</p>
         <p class="touch"><strong>Tap to choose files</strong> to upload</p>
         <p class="dz-hint">They are uploaded to this folder.</p>
       </div>
+      {{if $.Mkdir}}<button type="button" class="btn small dz-folder pointer" hidden><svg class="i" aria-hidden="true"><use href="#i-folder-plus"/></svg>Choose a folder</button>
+      <input type="file" class="folder-picker" webkitdirectory multiple hidden aria-label="Choose a folder to upload">{{end}}
     </div>
     {{if .Replace}}
     <div class="upload-options">

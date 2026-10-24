@@ -197,7 +197,9 @@ func TestFormUpload(t *testing.T) {
 	if csp := resp.Header.Get("Content-Security-Policy"); !strings.HasSuffix(csp, "form-action 'self'") {
 		t.Errorf("CSP %q", csp)
 	}
-	for _, want := range []string{`<form id="upload" class="upload" method="post" enctype="multipart/form-data" action="/sub/">`, `name="replace"`, `name="file"`} {
+	// Folders can be uploaded too, as the page's script creates them.
+	for _, want := range []string{`<form id="upload" class="upload" method="post" enctype="multipart/form-data" action="/sub/" data-folders="true">`,
+		`name="replace"`, `name="file"`, `Drop files or folders here`, `class="folder-picker" webkitdirectory`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("listing lacks %s", want)
 		}
