@@ -138,6 +138,13 @@ func (s *Server) createUpload(c fiber.Ctx, dirPath string, sh *auth.Share) error
 	if !s.roomFor(dir, length) {
 		return s.uploadError(nil, errLowSpace)
 	}
+	freed := int64(0)
+	if replace {
+		freed = sizeOf(dir, name)
+	}
+	if err := s.homeRoom(s.homeAt(dir), length-freed); err != nil {
+		return s.uploadError(nil, err)
+	}
 	rights := uploadRights{create: create, replace: mayReplace, rename: sh != nil}
 	if !rights.rename {
 		if s.locked(rootName(dirPath), name) {
@@ -155,16 +162,21 @@ func (s *Server) createUpload(c fiber.Ctx, dirPath string, sh *auth.Share) error
 		up.UserID = u.ID
 	}
 	if sh != nil {
-		// Each file sent counts as a use of the link, given back if
-		// the upload ends without it (see dropUpload).
+		// Each file sent counts as a use of the link, and its length
+		// as sent through it, given back if the upload ends without it
+		// (see dropUpload).
 		if err := s.spendLink(c, sh); err != nil {
+			return err
+		}
+		if err := s.addLinkBytes(c, sh, length); err != nil {
+			s.unuseLink(sh.ID, 0)
 			return err
 		}
 		up.ShareID = sh.ID
 	}
 	f, err := dir.OpenFile(up.Temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
-		s.unuseLink(up.ShareID)
+		s.unuseLink(up.ShareID, length)
 		return s.uploadError(nil, err)
 	}
 	_ = f.Close()
@@ -173,7 +185,7 @@ func (s *Server) createUpload(c fiber.Ctx, dirPath string, sh *auth.Share) error
 	token, err := s.auth.CreateUpload(ctx, up, s.cfg.Upload.ResumeWindow)
 	if err != nil {
 		_ = dir.Remove(up.Temp)
-		s.unuseLink(up.ShareID)
+		s.unuseLink(up.ShareID, length)
 		return err
 	}
 	s.log.Info("upload started", zap.String("ip", c.IP()), zap.String("user", visitor(c)), zap.String("path", urlPath),
@@ -314,8 +326,16 @@ func (s *Server) patchUpload(c fiber.Ctx) error {
 	body := s.requestBody(c)
 	stop := s.keepClaim(up, writer, body)
 	var written int64
-	if _, err = f.Seek(offset, io.SeekStart); err == nil {
-		written, err = io.Copy(s.spaceGuard(dir, f), body)
+	credit := int64(0)
+	if up.Replace {
+		credit = sizeOf(dir, up.Name)
+	}
+	w, err := s.writeGuard(dir, f, credit)
+	if err == nil {
+		_, err = f.Seek(offset, io.SeekStart)
+	}
+	if err == nil {
+		written, err = io.Copy(w, body)
 	}
 	stop()
 	// What arrived stays, also when the request was cut off.
@@ -501,12 +521,12 @@ func (s *Server) dropUpload(up *auth.Upload) {
 		s.log.Warn("forget upload", zap.Int64("upload", up.ID), zap.Error(err))
 		return
 	}
-	s.unuseLink(up.ShareID)
+	s.unuseLink(up.ShareID, up.Length)
 }
 
-// unuseLink gives back a use of the link id, if not 0, counted for a file
-// that was not stored after all.
-func (s *Server) unuseLink(id int64) {
+// unuseLink gives back a use of the link id, if not 0, and n bytes counted
+// as sent through it, for a file that was not stored after all.
+func (s *Server) unuseLink(id, n int64) {
 	if id == 0 {
 		return
 	}
@@ -515,6 +535,26 @@ func (s *Server) unuseLink(id int64) {
 	if err := s.auth.UnuseShare(ctx, id); err != nil {
 		s.log.Warn("give back link use", zap.Int64("share", id), zap.Error(err))
 	}
+	if n > 0 {
+		if err := s.auth.SubShareBytes(ctx, id, n); err != nil {
+			s.log.Warn("give back link bytes", zap.Int64("share", id), zap.Error(err))
+		}
+	}
+}
+
+// addLinkBytes counts n bytes as sent through the upload link sh, unless
+// that is more than it takes (413).
+func (s *Server) addLinkBytes(c fiber.Ctx, sh *auth.Share, n int64) error {
+	ctx, cancel := dbContext(c)
+	defer cancel()
+	ok, err := s.auth.AddShareBytes(ctx, sh.ID, n)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return explain(fiber.ErrRequestEntityTooLarge, "This link takes at most "+formatSize(max(sh.MaxBytes-sh.Bytes, 0))+" more.")
+	}
+	return nil
 }
 
 // removePartial removes what arrived for an upload, if its folder is still
@@ -522,6 +562,7 @@ func (s *Server) unuseLink(id int64) {
 func (s *Server) removePartial(up *auth.Upload) {
 	if validPartial(up.Temp) {
 		_ = s.root.Remove(rootName(path.Join(up.Dir, up.Temp)))
+		s.homeChanged(up.Dir)
 	}
 }
 
@@ -540,7 +581,7 @@ func (s *Server) purgeUploads(ctx context.Context) {
 			}
 			for i := range ups {
 				s.removePartial(&ups[i])
-				s.unuseLink(ups[i].ShareID)
+				s.unuseLink(ups[i].ShareID, ups[i].Length)
 			}
 			if len(ups) > 0 {
 				s.log.Info("removed expired uploads", zap.Int("uploads", len(ups)))

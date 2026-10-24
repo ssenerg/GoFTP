@@ -201,6 +201,7 @@ func TestLoadErrors(t *testing.T) {
 		{"homes at the top", map[string]string{"GOFTP_HOMES_PATH": "/"}, nil, "homes.path must be"},
 		{"relative homes", map[string]string{"GOFTP_HOMES_PATH": "home"}, nil, "homes.path must be"},
 		{"hidden homes", map[string]string{"GOFTP_HOMES_PATH": "/.home"}, nil, "homes.path must be"},
+		{"bad quota", map[string]string{"GOFTP_HOMES_QUOTA": "lots"}, nil, "invalid size"},
 		{"negative cache size", nil, []string{"--config", negativeCache}, "cache.max_size must not be negative"},
 		{"cache served", map[string]string{"GOFTP_CACHE_DIR": filepath.Join(dir, "thumbs")}, []string{"--dir", dir}, "cache.dir must be outside dir"},
 		{"cache is the dir", map[string]string{"GOFTP_CACHE_DIR": dir}, []string{"--dir", dir}, "cache.dir must be outside dir"},
@@ -247,6 +248,29 @@ func TestParseByteSize(t *testing.T) {
 	for _, in := range []string{"", "GB", "1.2.3MB", "-5", "5PB", "1e3", "9999999999TiB", "NaN"} {
 		if _, err := parseByteSize(in); err == nil {
 			t.Errorf("parseByteSize(%q) should fail", in)
+		}
+	}
+}
+
+func TestParseQuota(t *testing.T) {
+	for in, want := range map[string]int64{"none": 0, "No Limit": 0, "0": 0, "10GiB": 10 << 30, " 500 MB ": 500e6} {
+		if got, err := ParseQuota(in); err != nil || got == nil || *got != want {
+			t.Errorf("ParseQuota(%q) = %v, %v; want %d", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"", "default", " Default "} {
+		if got, err := ParseQuota(in); err != nil || got != nil {
+			t.Errorf("ParseQuota(%q) = %v, %v; want nil", in, got, err)
+		}
+	}
+	if _, err := ParseQuota("lots"); err == nil {
+		t.Error("ParseQuota(lots) should fail")
+	}
+	for b, want := range map[ByteSize]string{10 << 30: "10GiB", 1536: "1536B", 3 << 20: "3MiB", 1 << 40: "1TiB", 7: "7B"} {
+		if got := b.String(); got != want {
+			t.Errorf("ByteSize(%d) = %q, want %q", b, got, want)
+		} else if back, err := parseByteSize(got); err != nil || back != b {
+			t.Errorf("%q reads back as %d, %v", got, back, err)
 		}
 	}
 }

@@ -57,6 +57,24 @@ func TestUserCommands(t *testing.T) {
 		}
 	}
 
+	for _, args := range [][]string{{"user", "quota", "nobody", "1GiB"}, {"user", "quota", "bob", "lots"}} {
+		if out, err := run(t, args...); err == nil {
+			t.Errorf("goftp %s succeeded: %q", strings.Join(args, " "), out)
+		}
+	}
+	if out := mustRun(t, "user", "quota", "bob", "10GiB"); !strings.Contains(out, "the home of bob may hold 10GiB") {
+		t.Errorf("user quota: %q", out)
+	}
+	if out := mustRun(t, "user", "list"); !strings.Contains(out, "HOME QUOTA") || !regexp.MustCompile(`bob +\S+ +temporary +10GiB`).MatchString(out) {
+		t.Errorf("user list: %q", out)
+	}
+	if out := mustRun(t, "user", "quota", "bob", "none"); !strings.Contains(out, "may hold any amount") {
+		t.Errorf("user quota none: %q", out)
+	}
+	if out := mustRun(t, "user", "quota", "bob", "default"); !strings.Contains(out, "as much as homes.quota says") {
+		t.Errorf("user quota default: %q", out)
+	}
+
 	mustRun(t, "user", "role", "bob", "admin")
 	out = mustRun(t, "user", "passwd", "bob")
 	if !tempPassword.MatchString(out) {

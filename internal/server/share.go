@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"goftp/internal/auth"
+	"goftp/internal/config"
 )
 
 const (
@@ -82,6 +83,7 @@ type dropbox struct {
 	Action   string // where uploads go
 	Uploaded int    // files just sent
 	Left     int    // files that may still be sent, if limited
+	Room     string // how much may still be sent, e.g. "1.5 GiB", if limited
 }
 
 // shared serves what a link leads to, to anyone with the link (and its
@@ -310,6 +312,9 @@ func (s *Server) serveDropbox(c fiber.Ctx, sh *auth.Share, view *shareView, rel 
 	if sh.MaxUses > 0 {
 		box.Left = sh.MaxUses - sh.Uses
 	}
+	if sh.MaxBytes > 0 {
+		box.Room = formatSize(max(sh.MaxBytes-sh.Bytes, 0))
+	}
 	return s.render(c, fiber.StatusOK, "share", sharePage{page: s.sharePage(c, view, "Send files to "+box.Name), Dropbox: box})
 }
 
@@ -492,16 +497,25 @@ type createdLink struct {
 	Password            bool
 	Upload              bool
 	MaxUses             string // e.g. "10 downloads"; "" if not limited
+	MaxSize             string // e.g. "2.0 GiB" for upload links; "" if not limited
 	Expires, ExpiresISO string
 }
 
 // useCount says how often a link was used, e.g. "3 of 10 downloads" or
-// "1 file".
+// "1 file", and for upload links how much was sent: "1 file, 2.0 MiB of
+// 1.0 GiB".
 func useCount(sh *auth.Share) string {
+	uses := plural(sh.Uses, useNoun(sh))
 	if sh.MaxUses > 0 {
-		return strconv.Itoa(sh.Uses) + " of " + plural(sh.MaxUses, useNoun(sh))
+		uses = strconv.Itoa(sh.Uses) + " of " + plural(sh.MaxUses, useNoun(sh))
 	}
-	return plural(sh.Uses, useNoun(sh))
+	switch {
+	case sh.Upload && sh.MaxBytes > 0:
+		uses += ", " + formatSize(sh.Bytes) + " of " + formatSize(sh.MaxBytes)
+	case sh.Upload && sh.Bytes > 0:
+		uses += ", " + formatSize(sh.Bytes)
+	}
+	return uses
 }
 
 // useNoun names what counts as a use of a link.
@@ -566,7 +580,9 @@ func (s *Server) renderShares(c fiber.Ctx, status int, notice, failure string, c
 //	                                    PATH, which may also have
 //	                                    password=PW, kind=upload to let
 //	                                    people upload into the folder
-//	                                    instead, and max_uses=N to stop it
+//	                                    instead (with max_size=SIZE to
+//	                                    stop at SIZE in all, e.g. 2GiB),
+//	                                    and max_uses=N to stop it
 //	                                    after N downloads or files sent
 //	action=revoke&id=ID                 ends the link ID
 //
@@ -616,6 +632,13 @@ func (s *Server) createShare(c fiber.Ctx, u *auth.User, form map[string]string) 
 			return explain(fiber.ErrBadRequest, "Limit the uses of a link to a number up to "+strconv.Itoa(auth.MaxShareUses)+", or not at all.")
 		}
 		opts.MaxUses = n
+	}
+	if v := strings.TrimSpace(form["max_size"]); v != "" {
+		n, err := config.ParseByteSize(v)
+		if err != nil || !opts.Upload {
+			return explain(fiber.ErrBadRequest, "Limit what may be sent through an upload link to a size such as 500 MiB or 2 GiB, or not at all.")
+		}
+		opts.MaxBytes = int64(n)
 	}
 	urlPath, ok := formPath(form["path"])
 	if !ok {
@@ -671,16 +694,20 @@ func (s *Server) createShare(c fiber.Ctx, u *auth.User, form map[string]string) 
 	}
 	s.log.Info("share created", zap.String("ip", c.IP()), zap.String("user", u.Username), zap.String("path", urlPath),
 		zap.Int64("share", sh.ID), zap.Time("expires", sh.ExpiresAt), zap.Bool("password", sh.PasswordHash != ""),
-		zap.Bool("upload", sh.Upload), zap.Int("max_uses", sh.MaxUses))
+		zap.Bool("upload", sh.Upload), zap.Int("max_uses", sh.MaxUses), zap.Int64("max_bytes", sh.MaxBytes))
 
 	link := c.BaseURL() + sharePrefix + token + "/"
 	expires := sh.ExpiresAt.UTC()
 	c.Set(fiber.HeaderCacheControl, "no-store")
+	maxSize := ""
+	if sh.MaxBytes > 0 {
+		maxSize = formatSize(sh.MaxBytes)
+	}
 	if !strings.Contains(c.Get(fiber.HeaderAccept), fiber.MIMETextHTML) {
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"id": sh.ID, "url": link, "expires_at": expires.Format(time.RFC3339),
-			"upload": sh.Upload, "max_uses": sh.MaxUses})
+			"upload": sh.Upload, "max_uses": sh.MaxUses, "max_bytes": sh.MaxBytes, "max_size": maxSize})
 	}
-	created := &createdLink{URL: link, Name: shareName(urlPath), Password: sh.PasswordHash != "", Upload: sh.Upload,
+	created := &createdLink{URL: link, Name: shareName(urlPath), Password: sh.PasswordHash != "", Upload: sh.Upload, MaxSize: maxSize,
 		Expires: expires.Format("Jan 2, 2006 15:04") + " UTC", ExpiresISO: expires.Format(time.RFC3339)}
 	if sh.MaxUses > 0 {
 		created.MaxUses = plural(sh.MaxUses, useNoun(sh))

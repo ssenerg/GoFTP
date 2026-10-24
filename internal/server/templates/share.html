@@ -35,7 +35,7 @@
     </form>
     <section id="transfers" class="card transfers" aria-live="polite" hidden></section>
     <div id="drop" class="drop-overlay" hidden><div><svg class="i" aria-hidden="true"><use href="#i-upload"/></svg>Drop to send to <strong>{{.Name}}</strong></div></div>
-    <p class="muted small">{{with $.Share}}Link expires <time datetime="{{.ExpiresISO}}">{{.Expires}}</time>{{end}}{{if .Left}} · {{.Left}} more file{{if ne .Left 1}}s{{end}} may be sent{{end}}</p>
+    <p class="muted small">{{with $.Share}}Link expires <time datetime="{{.ExpiresISO}}">{{.Expires}}</time>{{end}}{{if .Left}} · {{.Left}} more file{{if ne .Left 1}}s{{end}} may be sent{{end}}{{with .Room}} · up to {{.}} more{{end}}</p>
   </div>
   {{end}}{{else}}{{with .File}}
   <div class="card share-card">

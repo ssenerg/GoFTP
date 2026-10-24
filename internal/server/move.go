@@ -105,6 +105,14 @@ func (s *Server) moveEntry(c fiber.Ctx, dirPath, name, dest string) (string, err
 			return "", err
 		}
 	}
+	// Moving into a home takes room there.
+	fromHome, _ := s.homeName(realSrc)
+	toHome, _ := s.homeName(path.Join(realTo, name))
+	if toHome != "" && toHome != fromHome {
+		if err := s.homeRoom(toHome, entryBytes(dir, name, info)); err != nil {
+			return "", s.uploadError(nil, err)
+		}
+	}
 	switch err := moveNoReplace(dir, name, to, name, info); {
 	case errors.Is(err, errExists):
 		return "", explain(fiber.ErrConflict, "Something named "+name+" is in that folder already.")
@@ -115,6 +123,10 @@ func (s *Server) moveEntry(c fiber.Ctx, dirPath, name, dest string) (string, err
 	}
 	syncDir(dir)
 	syncDir(to)
+	if toHome != fromHome {
+		s.recount(fromHome)
+		s.recount(toHome)
+	}
 	s.log.Info("move", zap.String("ip", c.IP()), zap.String("user", visitor(c)), zap.String("path", src), zap.String("to", dst))
 	return object(dst, info.IsDir()), nil
 }
@@ -200,6 +212,22 @@ func (s *Server) destination(c fiber.Ctx, dst string, isDir bool) (*os.Root, str
 		return nil, "", err
 	}
 	return to, realTo, nil
+}
+
+// entryBytes adds up the entry name of dir, info, with what is in it.
+func entryBytes(dir *os.Root, name string, info fs.FileInfo) int64 {
+	switch {
+	case info.Mode().IsRegular():
+		return info.Size()
+	case !info.IsDir():
+		return 0
+	}
+	sub, err := dir.OpenRoot(name)
+	if err != nil {
+		return 0
+	}
+	defer sub.Close()
+	return treeBytes(sub)
 }
 
 // within reports whether the URL path p is dir or inside it.

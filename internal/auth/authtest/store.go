@@ -108,6 +108,21 @@ func (s *Store) SetPassword(_ context.Context, userID int64, passwordHash string
 	return nil
 }
 
+func (s *Store) SetHomeQuota(_ context.Context, userID int64, quota *int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[userID]
+	if !ok {
+		return auth.ErrNotFound
+	}
+	if quota != nil {
+		q := *quota
+		quota = &q
+	}
+	u.HomeQuota = quota
+	return nil
+}
+
 func (s *Store) DeleteUser(_ context.Context, userID int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -225,6 +240,29 @@ func (s *Store) UseShare(_ context.Context, id int64) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func (s *Store) AddShareBytes(_ context.Context, id, n int64) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sh := range s.shares {
+		if sh.ID == id && time.Now().Before(sh.ExpiresAt) && (sh.MaxBytes == 0 || sh.Bytes+n <= sh.MaxBytes) {
+			sh.Bytes += n
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *Store) SubShareBytes(_ context.Context, id, n int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sh := range s.shares {
+		if sh.ID == id {
+			sh.Bytes = max(sh.Bytes-n, 0)
+		}
+	}
+	return nil
 }
 
 func (s *Store) UnuseShare(_ context.Context, id int64) error {

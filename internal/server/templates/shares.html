@@ -13,7 +13,7 @@
   <div class="alert success banner onetime" role="status">
     <svg class="i" aria-hidden="true"><use href="#i-check"/></svg>
     <div>
-      <p>Anyone with this link{{if .Password}} and its password{{end}} can {{if .Upload}}upload files to{{else}}open{{end}} <strong>{{.Name}}</strong> until <time datetime="{{.ExpiresISO}}">{{.Expires}}</time>{{with .MaxUses}}, {{.}} at most{{end}}:</p>
+      <p>Anyone with this link{{if .Password}} and its password{{end}} can {{if .Upload}}upload files to{{else}}open{{end}} <strong>{{.Name}}</strong> until <time datetime="{{.ExpiresISO}}">{{.Expires}}</time>{{with .MaxUses}}, {{.}} at most{{end}}{{with .MaxSize}}, up to {{.}} in all{{end}}:</p>
       <p class="copyable"><code id="share-link">{{.URL}}</code><button type="button" class="btn small" data-copy="share-link" hidden><svg class="i" aria-hidden="true"><use href="#i-copy"/></svg>Copy</button></p>
       <p class="onetime-note">Copy it now: it is shown only here, once.</p>
     </div>

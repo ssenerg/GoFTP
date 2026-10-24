@@ -225,6 +225,8 @@ func (s *Server) remove(c fiber.Ctx, dirPath, name string, permanent bool) (stri
 		return "", s.openError(err)
 	}
 	syncDir(dir)
+	// What its home holds moved to the trash, or left.
+	s.homeChanged(path.Join(realDir, name))
 	s.log.Info("delete", zap.String("ip", c.IP()), zap.String("user", visitor(c)), zap.String("path", target),
 		zap.Bool("folder", info.IsDir()), zap.Int("contents", contents), zap.Bool("trash", id != ""))
 	return id, nil

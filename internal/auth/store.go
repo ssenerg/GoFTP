@@ -19,6 +19,9 @@ type User struct {
 	PasswordHash       string
 	MustChangePassword bool
 	CreatedAt          time.Time
+	// HomeQuota is how much their home may hold, in bytes: nil for the
+	// server's default, 0 for no limit.
+	HomeQuota *int64
 }
 
 // Share is a link that lets people without an account read a file or
@@ -30,9 +33,13 @@ type Share struct {
 	PasswordHash string // empty when the link needs no password
 	// Upload is set for links to upload into the folder, which do not let
 	// people read it.
-	Upload    bool
-	MaxUses   int // downloads, or files uploaded, it allows; 0 for no limit
-	Uses      int
+	Upload  bool
+	MaxUses int // downloads, or files uploaded, it allows; 0 for no limit
+	Uses    int
+	// MaxBytes is how much may be sent through an upload link, 0 for no
+	// limit; Bytes how much was, or is being.
+	MaxBytes  int64
+	Bytes     int64
 	CreatedBy int64
 	Creator   string // the username of CreatedBy
 	CreatedAt time.Time
@@ -71,6 +78,9 @@ type Store interface {
 	SetPassword(ctx context.Context, userID int64, passwordHash string, mustChange bool) error
 	// DeleteUser also deletes the user's sessions and share links.
 	DeleteUser(ctx context.Context, userID int64) error
+	// SetHomeQuota sets how much the user's home may hold (see
+	// User.HomeQuota).
+	SetHomeQuota(ctx context.Context, userID int64, quota *int64) error
 
 	// CreateSession starts a session for u, unless u was deleted or changed
 	// password since it was read (ErrNotFound). It may drop the user's
@@ -95,6 +105,11 @@ type Store interface {
 	// UnuseShare takes back a use of the link id, counted for a file that
 	// was not stored after all.
 	UnuseShare(ctx context.Context, id int64) error
+	// AddShareBytes counts n more bytes sent through the unexpired upload
+	// link id, unless that would go past its MaxBytes (false).
+	AddShareBytes(ctx context.Context, id, n int64) (bool, error)
+	// SubShareBytes takes back n bytes counted for the link id.
+	SubShareBytes(ctx context.Context, id, n int64) error
 	// TouchShare notes that the link id was opened now. It may skip
 	// noting it if it was within the last minute.
 	TouchShare(ctx context.Context, id int64) error

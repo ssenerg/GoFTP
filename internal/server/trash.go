@@ -440,6 +440,7 @@ func (s *Server) purge(c fiber.Ctx, id string) error {
 	if err := trash.RemoveAll(goneMark + id); err != nil {
 		return err
 	}
+	s.homeChanged(note.Path)
 	s.log.Info("purge", zap.String("ip", c.IP()), zap.String("user", visitor(c)), zap.String("path", note.Path),
 		zap.Bool("folder", note.Dir))
 	return nil
@@ -587,6 +588,9 @@ func (s *Server) expireTrash(cutoff time.Time) int {
 				}
 			}
 		}
+	}
+	if removed > 0 {
+		s.recountAll()
 	}
 	return removed
 }

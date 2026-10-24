@@ -43,7 +43,7 @@
 
   <div class="card">
     <table class="files list-table">
-      <thead><tr><th>User</th><th>Role</th><th class="date">Added</th><th class="act"><span class="vh">Actions</span></th></tr></thead>
+      <thead><tr><th>User</th><th>Role</th>{{if .Homes}}<th>Home quota</th>{{end}}<th class="date">Added</th><th class="act"><span class="vh">Actions</span></th></tr></thead>
       <tbody>
         {{range .Users}}
         <tr>
@@ -57,6 +57,13 @@
             </form>
             {{end}}
           </td>
+          {{if $.Homes}}<td class="quota-cell"><span class="cell-label">Home quota</span>
+            <form method="post" action="/.admin/users" class="role-form quota-form">
+              <input type="hidden" name="action" value="quota"><input type="hidden" name="user" value="{{.Name}}">
+              <input name="quota" value="{{.Quota}}" maxlength="20" autocomplete="off" spellcheck="false" aria-label="Home quota of {{.Name}}" placeholder="Default{{with $.Quota}} ({{.}}){{else}}: none{{end}}" title="A size such as 10 GiB, none for no limit, or nothing for the default">
+              <button type="submit" class="btn small">Save</button>
+            </form>
+          </td>{{end}}
           <td class="date"><time datetime="{{.AddedISO}}">{{.Added}}</time></td>
           <td class="act">
             {{if not .Self}}

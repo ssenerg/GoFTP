@@ -47,6 +47,7 @@ upload:
 
 homes:                   # a private folder for every user, as PATH/NAME
   path: /home            # off turns them off
+  quota: 0               # how much a home may hold, e.g. 10GiB, unless set for its user; 0 = no limit
 
 trash:                   # deleted files and folders, which can be restored
   keep: 720h             # how long (30 days); 0 deletes at once

@@ -95,6 +95,9 @@ type HomesConfig struct {
 	// Path is the URL path of the folder that holds them, as
 	// Path/NAME; "" or "off" turns them off.
 	Path string `mapstructure:"path"`
+	// Quota is how much a home may hold, with what its user deleted from
+	// it, unless set for the user; 0 for no limit.
+	Quota ByteSize `mapstructure:"quota"`
 }
 
 // ByteSize is a size in bytes; config values may use units such as "10GiB".
@@ -104,6 +107,40 @@ var sizeUnits = map[string]float64{
 	"": 1, "b": 1,
 	"kb": 1e3, "mb": 1e6, "gb": 1e9, "tb": 1e12,
 	"kib": 1 << 10, "mib": 1 << 20, "gib": 1 << 30, "tib": 1 << 40,
+}
+
+// ParseByteSize parses a size such as "512MiB", "10GB" or "1048576".
+func ParseByteSize(s string) (ByteSize, error) { return parseByteSize(s) }
+
+// ParseQuota parses a user's home quota: a size, "none" (or 0) for no
+// limit, or "" or "default" for homes.quota (nil).
+func ParseQuota(s string) (*int64, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "default":
+		return nil, nil
+	case "none", "no limit", "unlimited":
+		s = "0"
+	}
+	n, err := parseByteSize(s)
+	if err != nil {
+		return nil, err
+	}
+	q := int64(n)
+	return &q, nil
+}
+
+// String writes b in the largest unit it is a whole number of, e.g.
+// "10GiB"; ParseByteSize reads it back.
+func (b ByteSize) String() string {
+	for _, u := range []struct {
+		name string
+		size ByteSize
+	}{{"TiB", 1 << 40}, {"GiB", 1 << 30}, {"MiB", 1 << 20}, {"KiB", 1 << 10}} {
+		if b >= u.size && b%u.size == 0 {
+			return strconv.FormatInt(int64(b/u.size), 10) + u.name
+		}
+	}
+	return strconv.FormatInt(int64(b), 10) + "B"
 }
 
 func parseByteSize(s string) (ByteSize, error) {
@@ -209,6 +246,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("upload.resume_window", 24*time.Hour)
 	v.SetDefault("trash.keep", 30*24*time.Hour)
 	v.SetDefault("homes.path", "/home")
+	v.SetDefault("homes.quota", 0)
 	v.SetDefault("cache.dir", "")
 	v.SetDefault("cache.max_size", 512<<20)
 }
@@ -278,6 +316,9 @@ func (c *Config) normalize() error {
 	}
 	if c.Upload.MinFree < 0 {
 		errs = append(errs, errors.New("upload.min_free must not be negative"))
+	}
+	if c.Homes.Quota < 0 {
+		errs = append(errs, errors.New("homes.quota must not be negative"))
 	}
 	if c.Upload.ResumeWindow < time.Minute {
 		errs = append(errs, errors.New("upload.resume_window must be at least 1m"))

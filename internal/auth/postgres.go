@@ -21,11 +21,11 @@ type PgStore struct{ db *pgxpool.Pool }
 
 func NewPgStore(db *pgxpool.Pool) *PgStore { return &PgStore{db: db} }
 
-const userColumns = "id, username, password_hash, must_change_password, created_at"
+const userColumns = "id, username, password_hash, must_change_password, created_at, home_quota"
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.MustChangePassword, &u.CreatedAt)
+	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.MustChangePassword, &u.CreatedAt, &u.HomeQuota)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -81,6 +81,14 @@ func (s *PgStore) SetPassword(ctx context.Context, userID int64, passwordHash st
 	})
 }
 
+func (s *PgStore) SetHomeQuota(ctx context.Context, userID int64, quota *int64) error {
+	tag, err := s.db.Exec(ctx, "UPDATE users SET home_quota = $2 WHERE id = $1", userID, quota)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = ErrNotFound
+	}
+	return err
+}
+
 func (s *PgStore) DeleteUser(ctx context.Context, userID int64) error {
 	tag, err := s.db.Exec(ctx, "DELETE FROM users WHERE id = $1", userID)
 	if err == nil && tag.RowsAffected() == 0 {
@@ -114,7 +122,7 @@ func (s *PgStore) CreateSession(ctx context.Context, tokenHash []byte, u *User, 
 }
 
 func (s *PgStore) SessionUser(ctx context.Context, tokenHash []byte) (*User, error) {
-	return scanUser(s.db.QueryRow(ctx, `SELECT u.id, u.username, u.password_hash, u.must_change_password, u.created_at
+	return scanUser(s.db.QueryRow(ctx, `SELECT u.id, u.username, u.password_hash, u.must_change_password, u.created_at, u.home_quota
 		FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = $1 AND s.expires_at > now()`, tokenHash))
 }
@@ -129,16 +137,16 @@ func (s *PgStore) DeleteExpiredSessions(ctx context.Context) error {
 	return err
 }
 
-const shareColumns = "s.id, s.path, s.is_dir, s.password_hash, s.upload, s.max_uses, s.uses, s.created_by, u.username, " +
-	"s.created_at, s.expires_at, s.last_used_at"
+const shareColumns = "s.id, s.path, s.is_dir, s.password_hash, s.upload, s.max_uses, s.uses, s.max_bytes, s.bytes, " +
+	"s.created_by, u.username, s.created_at, s.expires_at, s.last_used_at"
 
 func scanShare(row pgx.Row) (*Share, error) {
 	var (
 		sh       Share
 		lastUsed *time.Time
 	)
-	err := row.Scan(&sh.ID, &sh.Path, &sh.IsDir, &sh.PasswordHash, &sh.Upload, &sh.MaxUses, &sh.Uses, &sh.CreatedBy, &sh.Creator,
-		&sh.CreatedAt, &sh.ExpiresAt, &lastUsed)
+	err := row.Scan(&sh.ID, &sh.Path, &sh.IsDir, &sh.PasswordHash, &sh.Upload, &sh.MaxUses, &sh.Uses, &sh.MaxBytes, &sh.Bytes,
+		&sh.CreatedBy, &sh.Creator, &sh.CreatedAt, &sh.ExpiresAt, &lastUsed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -167,9 +175,9 @@ func (s *PgStore) CreateShare(ctx context.Context, tokenHash []byte, sh *Share) 
 		if n >= MaxShares {
 			return ErrTooMany
 		}
-		return tx.QueryRow(ctx, `INSERT INTO shares (token_hash, path, is_dir, created_by, password_hash, expires_at, upload, max_uses)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, created_at`,
-			tokenHash, sh.Path, sh.IsDir, id, sh.PasswordHash, sh.ExpiresAt, sh.Upload, sh.MaxUses).Scan(&sh.ID, &sh.CreatedAt)
+		return tx.QueryRow(ctx, `INSERT INTO shares (token_hash, path, is_dir, created_by, password_hash, expires_at, upload, max_uses, max_bytes)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, created_at`,
+			tokenHash, sh.Path, sh.IsDir, id, sh.PasswordHash, sh.ExpiresAt, sh.Upload, sh.MaxUses, sh.MaxBytes).Scan(&sh.ID, &sh.CreatedAt)
 	})
 }
 
@@ -187,6 +195,17 @@ func (s *PgStore) UseShare(ctx context.Context, id int64) (bool, error) {
 	tag, err := s.db.Exec(ctx, `UPDATE shares SET uses = uses + 1, last_used_at = now()
 		WHERE id = $1 AND expires_at > now() AND (max_uses = 0 OR uses < max_uses)`, id)
 	return err == nil && tag.RowsAffected() == 1, err
+}
+
+func (s *PgStore) AddShareBytes(ctx context.Context, id, n int64) (bool, error) {
+	tag, err := s.db.Exec(ctx, `UPDATE shares SET bytes = bytes + $2
+		WHERE id = $1 AND expires_at > now() AND (max_bytes = 0 OR bytes + $2 <= max_bytes)`, id, n)
+	return err == nil && tag.RowsAffected() == 1, err
+}
+
+func (s *PgStore) SubShareBytes(ctx context.Context, id, n int64) error {
+	_, err := s.db.Exec(ctx, "UPDATE shares SET bytes = greatest(bytes - $2, 0) WHERE id = $1", id, n)
+	return err
 }
 
 func (s *PgStore) UnuseShare(ctx context.Context, id int64) error {
