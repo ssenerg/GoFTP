@@ -21,6 +21,7 @@ const DenyPrefix = "!"
 // Signed-in users may also do whatever the rules for everyone allow.
 type Rules struct {
 	own, anonymous []rule
+	fold           func(string) string // see SetFold; nil compares paths as they are
 }
 
 type rule struct {
@@ -46,6 +47,19 @@ func (s *Service) SetHomes(homes string) { s.homes.Store(homes) }
 func (s *Service) Homes() string {
 	homes, _ := s.homes.Load().(string)
 	return homes
+}
+
+// SetFold makes rules compare paths after fold, for a served folder whose
+// file system finds names whatever their case or Unicode normalization:
+// the same name spelled otherwise must meet the same rules. nil compares
+// them as they are. It is set before serving.
+func (s *Service) SetFold(fold func(string) string) { s.fold.Store(&fold) }
+
+func (s *Service) folder() func(string) string {
+	if fold, ok := s.fold.Load().(*func(string) string); ok {
+		return *fold
+	}
+	return nil
 }
 
 // HomeOf returns the URL path of the home of username, "" without homes.
@@ -79,6 +93,13 @@ func (s *Service) RulesFor(u *User) (*Rules, error) {
 			// The home itself stays, whatever happens in it.
 			r.own = append(r.own, closed, rule{base: home, wildcard: true, act: "*", distance: builtIn},
 				rule{base: home, deny: true, act: ActDelete, distance: builtIn})
+		}
+	}
+	if r.fold = s.folder(); r.fold != nil {
+		for _, rules := range [][]rule{r.own, r.anonymous} {
+			for i := range rules {
+				rules[i].base = r.fold(rules[i].base)
+			}
 		}
 	}
 	return r, nil
@@ -123,6 +144,9 @@ func compile(policies [][]string, distances map[string]int) []rule {
 
 // Allow reports whether the rules let their visitor perform act on obj.
 func (r *Rules) Allow(obj, act string) bool {
+	if r.fold != nil {
+		obj = r.fold(obj)
+	}
 	return decide(r.own, obj, act) || decide(r.anonymous, obj, act)
 }
 

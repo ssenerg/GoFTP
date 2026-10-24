@@ -92,6 +92,9 @@ type Store interface {
 	// UseShare counts a use of the unexpired link id and notes when it
 	// was, unless it was used as often as it may be (false).
 	UseShare(ctx context.Context, id int64) (bool, error)
+	// UnuseShare takes back a use of the link id, counted for a file that
+	// was not stored after all.
+	UnuseShare(ctx context.Context, id int64) error
 	// TouchShare notes that the link id was opened now. It may skip
 	// noting it if it was within the last minute.
 	TouchShare(ctx context.Context, id int64) error

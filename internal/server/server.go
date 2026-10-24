@@ -54,6 +54,8 @@ type Server struct {
 	// claimHome); homeMu orders the claims.
 	homesChecked sync.Map
 	homeMu       sync.Mutex
+	// fold is how rules compare paths (see checkNames), nil as spelled.
+	fold func(string) string
 	// proxyNoted is set once untrusted proxy headers have been logged.
 	proxyNoted atomic.Bool
 
@@ -75,6 +77,13 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 	if err != nil {
 		return nil, err
 	}
+	// Spelled as the kernel spells the paths of what is in it.
+	if f, err := root.Open("."); err == nil {
+		if p, ok := fdPath(f); ok {
+			rootPath = p
+		}
+		_ = f.Close()
+	}
 	s := &Server{
 		cfg:       cfg,
 		log:       log,
@@ -83,11 +92,19 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 		rootPath:  rootPath,
 		errEscape: escapeError(root),
 	}
+	fold, err := s.checkNames()
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	s.fold = fold
+	authSvc.SetFold(fold)
 	authSvc.SetHomes(cfg.Homes.Path)
 	if err := s.checkHomes(); err != nil {
 		_ = root.Close()
 		return nil, err
 	}
+	s.warnOldHomes()
 
 	s.app = fiber.New(fiber.Config{
 		ErrorHandler:      s.handleError,

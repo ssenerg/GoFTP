@@ -3,13 +3,16 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"goftp/internal/auth"
 	"goftp/internal/config"
 )
 
@@ -261,5 +264,260 @@ func TestInHome(t *testing.T) {
 		if got := inHome(tc.home, tc.p); got != tc.want {
 			t.Errorf("inHome(%q, %q) = %q, want %q", tc.home, tc.p, got, tc.want)
 		}
+	}
+}
+
+// What a deleted user deleted from their home is not a new user's of the
+// same name, until a superadmin gives the old home back.
+func TestTrashOfReusedName(t *testing.T) {
+	ta := newTestAuth(t)
+	f := newFixtureWith(t, ta, withHomes)
+	super := f.as("superadmin")
+	dora := &fixture{srv: f.srv, dir: f.dir, logs: f.logs, auth: ta, token: ta.addUser(t, "dora", "user")}
+	resp, _ := dora.send(t, "PUT", "/home/dora/diary.txt", strings.NewReader("old dora's diary"))
+	expectStatus(t, resp, http.StatusCreated)
+	resp, _ = dora.do(t, "DELETE", "/home/dora/diary.txt")
+	expectStatus(t, resp, http.StatusNoContent)
+	diary := resp.Header.Get(trashIDsHeader)
+	resp, _ = post(t, super, usersPath, "action=delete&user=dora")
+	expectStatus(t, resp, http.StatusSeeOther)
+
+	dora.token = ta.addUser(t, "dora", "user")
+	if _, body := dora.do(t, "GET", trashPath); strings.Contains(body, "diary.txt") || strings.Contains(body, `<span>dora</span>`) {
+		t.Errorf("the new dora sees the old one's trash: %s", body)
+	}
+	for _, form := range []string{"action=restore&id=" + diary, "action=purge&id=" + diary} {
+		if resp, _ := trashForm(t, dora, form); resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s: %d", form, resp.StatusCode)
+		}
+	}
+	if !exists(filepath.Join(f.dir, trashDir, diary)) {
+		t.Fatal("the old diary is gone")
+	}
+	if _, body := super.do(t, "GET", trashPath); strings.Contains(body, "diary.txt") {
+		t.Error("superadmins see what was in a home")
+	}
+
+	// Once the old home is back, so is what she deleted from it.
+	var home string
+	for _, e := range trashedOnDisk(t, f) {
+		if e != diary {
+			home = e
+		}
+	}
+	resp, _ = trashForm(t, super, "action=restore&id="+home)
+	expectStatus(t, resp, http.StatusCreated)
+	if _, body := dora.do(t, "GET", trashPath); !strings.Contains(body, "diary.txt") {
+		t.Error("her trash did not come back with her home")
+	}
+	resp, _ = trashForm(t, dora, "action=restore&id="+diary)
+	expectStatus(t, resp, http.StatusCreated)
+	if resp, body := dora.do(t, "GET", "/home/dora/diary.txt"); resp.StatusCode != http.StatusOK || body != "old dora's diary" {
+		t.Errorf("restored diary: %d %q", resp.StatusCode, body)
+	}
+}
+
+// A home that cannot be moved away keeps its new user out of it, and out
+// of nothing else.
+func TestHomeThatCannotBeSettled(t *testing.T) {
+	ta := newTestAuth(t)
+	f := newFixtureWith(t, ta, withHomes)
+	f.write(t, "docs/a.txt", "a")
+	f.write(t, "home/gus/old.txt", "the old gus's")
+	f.write(t, "home/gus/"+homeOwner, "999999\n")
+	f.write(t, trashDir, "not a folder")
+	gus := &fixture{srv: f.srv, dir: f.dir, logs: f.logs, auth: ta, token: ta.addUser(t, "gus", "user")}
+	if resp, body := gus.do(t, "GET", "/docs/a.txt"); resp.StatusCode != http.StatusOK || body != "a" {
+		t.Errorf("elsewhere: %d %q", resp.StatusCode, body)
+	}
+	for _, uri := range []string{"/home/gus/old.txt", "/HOME/Gus/old.txt"} {
+		if resp, _ := gus.do(t, "GET", uri); resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusNotFound {
+			t.Errorf("the old home, as %s: %d", uri, resp.StatusCode)
+		}
+	}
+	if len(f.logs.entries("claim home")) == 0 {
+		t.Error("not logged")
+	}
+}
+
+// Rules for a deleted user's home go with them: a new user of that name
+// starts with a private home.
+func TestHomeRulesGoWithUser(t *testing.T) {
+	ta := newTestAuth(t)
+	f := newFixtureWith(t, ta, withHomes)
+	ta.addUser(t, "dora", "user")
+	for _, obj := range []string{"/home/dora/*", "!/home/dora/x", "/home/dorab/*", "/home/*"} {
+		if _, err := ta.svc.AddPolicy("user:"+userOfRole("user"), obj, auth.ActRead); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resp, _ := post(t, f.as("superadmin"), usersPath, "action=delete&user=dora")
+	expectStatus(t, resp, http.StatusSeeOther)
+	perms, _, err := ta.svc.Policies()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	for _, p := range perms {
+		if strings.HasPrefix(strings.TrimPrefix(p[1], auth.DenyPrefix), "/home/") {
+			left = append(left, p[1])
+		}
+	}
+	slices.Sort(left)
+	if strings.Join(left, " ") != "/home/* /home/dorab/*" {
+		t.Errorf("rules left: %v", left)
+	}
+}
+
+// Superadmins may revoke any link, without learning what is in others'
+// homes.
+func TestSharesPageHidesHomes(t *testing.T) {
+	ta := newTestAuth(t)
+	f := newFixtureWith(t, ta, withHomes)
+	dora := &fixture{srv: f.srv, dir: f.dir, logs: f.logs, auth: ta, token: ta.addUser(t, "dora", "user")}
+	resp, _ := dora.send(t, "PUT", "/home/dora/tax-return.pdf", strings.NewReader("%PDF"))
+	expectStatus(t, resp, http.StatusCreated)
+	createLink(t, dora, url.Values{"path": {"/home/dora/tax-return.pdf"}})
+	_, body := f.as("superadmin").do(t, "GET", sharesPath, "Accept", "text/html")
+	if strings.Contains(body, "tax-return") || !strings.Contains(body, "Private file") || !strings.Contains(body, "Revoke") {
+		t.Errorf("shares page: %s", body)
+	}
+	if _, body := dora.do(t, "GET", sharesPath, "Accept", "text/html"); !strings.Contains(body, "tax-return.pdf") {
+		t.Error("the owner does not see her own link")
+	}
+}
+
+// With the trash off, deleting a user deletes their home, and says so.
+func TestDeleteUserWithTrashOff(t *testing.T) {
+	ta := newTestAuth(t)
+	f := newFixtureWith(t, ta, withHomes, func(cfg *config.Config) { cfg.Trash.Keep = 0 })
+	super := f.as("superadmin")
+	dora := &fixture{srv: f.srv, dir: f.dir, logs: f.logs, auth: ta, token: ta.addUser(t, "dora", "user")}
+	resp, _ := dora.send(t, "PUT", "/home/dora/a.txt", strings.NewReader("a"))
+	expectStatus(t, resp, http.StatusCreated)
+	if _, body := super.do(t, "GET", usersPath); !strings.Contains(body, "Their home and everything in it go too.") {
+		t.Error("the confirmation does not say the home goes for good")
+	}
+	resp, _ = post(t, super, usersPath, "action=delete&user=dora", "Accept", "text/html")
+	if got := resp.Header.Get("Location"); got != usersPath+"?done=deleted-all" {
+		t.Errorf("Location %q", got)
+	}
+	if exists(filepath.Join(f.dir, "home", "dora")) {
+		t.Error("her home stayed")
+	}
+}
+
+// Restoring a home lets an empty new one give way, but never what arrived
+// in it meanwhile.
+func TestClearEmptyHome(t *testing.T) {
+	dir, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	if err := dir.Mkdir("ann", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOwner(dir, "ann", 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := clearEmptyHome(dir, "ann"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dir.Lstat("ann"); !os.IsNotExist(err) {
+		t.Error("an empty home stayed")
+	}
+	if err := dir.Mkdir("bob", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOwner(dir, "bob", 8); err != nil {
+		t.Fatal(err)
+	}
+	if err := dir.WriteFile("bob/new.txt", []byte("just in"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := clearEmptyHome(dir, "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if id, _, _ := readOwner(dir, "bob"); id != 8 {
+		t.Errorf("owner %d", id)
+	}
+}
+
+// Where the file system finds names whatever their case, other spellings
+// of a path meet the rules of its real one.
+func TestSpelledOtherwise(t *testing.T) {
+	ta := newTestAuth(t)
+	f := newFixtureWith(t, ta, withHomes)
+	if !exists(filepath.Join(f.dir, "HOME")) {
+		t.Skip("names are found only as spelled here")
+	}
+	if _, err := ta.svc.AddPolicy("operator", "!/Docs/Secret/*", auth.ActRead); err != nil {
+		t.Fatal(err)
+	}
+	f.write(t, "docs/secret/plan.txt", "plan")
+	victim := &fixture{srv: f.srv, dir: f.dir, logs: f.logs, auth: ta, token: ta.addUser(t, "victim", "user")}
+	resp, _ := victim.send(t, "PUT", "/home/victim/private.txt", strings.NewReader("secret"))
+	expectStatus(t, resp, http.StatusCreated)
+	op, admin := f.as("operator"), f.as("admin")
+	for _, req := range []struct {
+		who         *fixture
+		method, uri string
+	}{
+		{op, "GET", "/HOME/victim/private.txt"},
+		{op, "GET", "/Home/victim/"},
+		{op, "GET", "/home/VICTIM/private.txt?inline"},
+		{op, "PUT", "/HOME/victim/planted.txt"},
+		{admin, "DELETE", "/HOME/victim/private.txt"},
+		{op, "GET", "/docs/secret/plan.txt"},
+		{op, "GET", "/DOCS/SECRET/plan.txt"},
+	} {
+		if resp, _ := req.who.send(t, req.method, req.uri, strings.NewReader("x")); resp.StatusCode < 400 {
+			t.Errorf("%s %s: %d", req.method, req.uri, resp.StatusCode)
+		}
+	}
+	if _, body := op.do(t, "GET", "/.search/?in=/HOME&q=private"); strings.Contains(body, "private.txt") {
+		t.Error("search finds what is in a home")
+	}
+	if resp, _ := post(t, admin, "/Home/", "copy=victim&into=/docs"); resp.StatusCode < 400 {
+		t.Errorf("copying a home: %d", resp.StatusCode)
+	}
+	if readFile(t, f.dir, "home/victim/private.txt") != "secret" || exists(filepath.Join(f.dir, "home", "victim", "planted.txt")) {
+		t.Error("the home changed")
+	}
+	// Its owner may still spell it as she likes.
+	if resp, body := victim.do(t, "GET", "/HOME/Victim/private.txt"); resp.StatusCode != http.StatusOK || body != "secret" {
+		t.Errorf("the owner: %d %q", resp.StatusCode, body)
+	}
+}
+
+// Rules fold paths as the file system folds names, if it does.
+func TestCheckNames(t *testing.T) {
+	f := newFixture(t)
+	fold, err := f.srv.checkNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.write(t, "probe.txt", "")
+	caseless := f.srv.sameEntry("probe.txt", "PROBE.TXT")
+	if (fold != nil && fold("/A") == "/a") != caseless {
+		t.Errorf("caseless %v, but fold %v", caseless, fold != nil)
+	}
+	if got := swapCase("Ab-Ç1é"); got != "aB-ç1É" {
+		t.Errorf("swapCase: %q", got)
+	}
+	if !f.srv.sameEntry("probe.txt", "probe.txt") || f.srv.sameEntry("probe.txt", "other.txt") {
+		t.Error("sameEntry")
+	}
+}
+
+// With homes off, homes left from before are ordinary folders: goftp says
+// so at startup.
+func TestOldHomesWarning(t *testing.T) {
+	f := newFixture(t)
+	f.write(t, "home/ann/"+homeOwner, "7\n")
+	g := newFixtureWith(t, f.auth, func(cfg *config.Config) { cfg.Dir = f.dir })
+	if len(g.logs.entries("homes are off, but /home holds homes from before: whoever the rules let in may open them now")) != 1 {
+		t.Error("no warning")
 	}
 }

@@ -3,6 +3,7 @@
 package server
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -22,4 +23,15 @@ func renameBetween(from *os.Root, name string, to *os.Root, newName string) erro
 // folder to; it fails if newName exists.
 func linkBetween(from *os.Root, name string, to *os.Root, newName string) error {
 	return os.Link(filepath.Join(from.Name(), name), filepath.Join(to.Name(), newName))
+}
+
+// renameExclBetween is renameBetween, unless newName exists (errExists), as
+// checked just before.
+func renameExclBetween(from *os.Root, name string, to *os.Root, newName string) error {
+	if _, err := to.Lstat(newName); err == nil {
+		return errExists
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return renameBetween(from, name, to, newName)
 }

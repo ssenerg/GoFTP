@@ -72,7 +72,7 @@
               <summary class="icon-btn" aria-label="Delete {{.Name}}" title="Delete"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg></summary>
               <form method="post" action="/.admin/users" class="popover">
                 <input type="hidden" name="action" value="delete"><input type="hidden" name="user" value="{{.Name}}">
-                <p>Delete <strong>{{.Name}}</strong> and their rules? This cannot be undone.{{if $.Homes}} Their home goes to the trash.{{end}}</p>
+                <p>Delete <strong>{{.Name}}</strong> and their rules? This cannot be undone.{{if $.Homes}}{{if $.NoTrash}} Their home and everything in it go too.{{else}} Their home goes to the trash.{{end}}{{end}}</p>
                 <div class="popover-actions"><button type="submit" class="btn danger small"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Delete</button></div>
               </form>
             </details>

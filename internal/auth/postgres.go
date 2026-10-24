@@ -189,6 +189,11 @@ func (s *PgStore) UseShare(ctx context.Context, id int64) (bool, error) {
 	return err == nil && tag.RowsAffected() == 1, err
 }
 
+func (s *PgStore) UnuseShare(ctx context.Context, id int64) error {
+	_, err := s.db.Exec(ctx, "UPDATE shares SET uses = uses - 1 WHERE id = $1 AND uses > 0", id)
+	return err
+}
+
 func (s *PgStore) TouchShare(ctx context.Context, id int64) error {
 	_, err := s.db.Exec(ctx, `UPDATE shares SET last_used_at = now()
 		WHERE id = $1 AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')`, id)

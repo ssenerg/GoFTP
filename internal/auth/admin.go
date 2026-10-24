@@ -111,9 +111,10 @@ func (s *Service) SetRole(ctx context.Context, username, role string) error {
 	return nil
 }
 
-// DeleteUser removes the user, their policies and sessions. Policies go
-// first, so a failure leaves the user without access rather than orphaned
-// rules for a future user of the same name.
+// DeleteUser removes the user, their policies and sessions, and the rules
+// for their home, whoever they are for. Policies go first, so a failure
+// leaves the user without access rather than orphaned rules for a future
+// user of the same name.
 func (s *Service) DeleteUser(ctx context.Context, username string) error {
 	u, err := s.user(ctx, username)
 	if err != nil {
@@ -122,7 +123,35 @@ func (s *Service) DeleteUser(ctx context.Context, username string) error {
 	if _, err := s.enforcer.DeleteUser(Subject(u.Username)); err != nil {
 		return err
 	}
+	if err := s.dropHomeRules(u.Username); err != nil {
+		return err
+	}
 	return s.store.DeleteUser(ctx, u.ID)
+}
+
+// dropHomeRules removes the rules for paths in the home of username, such
+// as one that let someone else read it: they were about the home of the
+// user who is deleted, not of a new user of that name.
+func (s *Service) dropHomeRules(username string) error {
+	home := s.HomeOf(username)
+	if home == "" {
+		return nil
+	}
+	perms, err := s.enforcer.GetPolicy()
+	if err != nil {
+		return err
+	}
+	for _, p := range perms {
+		if len(p) < 3 {
+			continue
+		}
+		if obj := strings.TrimPrefix(p[1], DenyPrefix); obj == home || strings.HasPrefix(obj, home+"/") {
+			if _, err := s.enforcer.RemovePolicy(p[0], p[1], p[2]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Service) Users(ctx context.Context) ([]UserInfo, error) {

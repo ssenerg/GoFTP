@@ -123,11 +123,7 @@ func (s *Server) shared(c fiber.Ctx) error {
 				_ = f.Close()
 				return s.redirect(c, view.Root)
 			}
-			if err := s.useLink(c, sh); err != nil {
-				_ = f.Close()
-				return err
-			}
-			return s.serveFileAs(c, f, info, sh.Path, realPath, fileAt{base: view.base, rel: rel, allow: allow})
+			return s.serveFileAs(c, f, info, sh.Path, realPath, fileAt{base: view.base, rel: rel, allow: allow, use: s.linkUse(c, sh)})
 		case "/":
 			_, preview := inlineType(f, name)
 			_ = f.Close()
@@ -150,13 +146,10 @@ func (s *Server) shared(c fiber.Ctx) error {
 		}
 	}
 	if !info.IsDir() {
-		if err := s.useLink(c, sh); err != nil {
-			_ = f.Close()
-			return err
-		}
 		// The file is closed once it is sent.
 		return s.serveFileAs(c, f, info, urlPath, realPath, fileAt{
 			base: view.base, rel: rel, page: func(title string) page { return s.sharePage(c, view, title) }, allow: allow,
+			use: s.linkUse(c, sh),
 		})
 	}
 	defer f.Close()
@@ -165,8 +158,10 @@ func (s *Server) shared(c fiber.Ctx) error {
 		return c.Redirect().Status(fiber.StatusMovedPermanently).To(escapePath(view.base + rel + "/"))
 	}
 	if c.Request().URI().QueryArgs().Has("zip") {
-		if err := s.useLink(c, sh); err != nil {
-			return err
+		if c.Method() != fiber.MethodHead {
+			if err := s.spendLink(c, sh); err != nil {
+				return err
+			}
 		}
 		return s.serveZip(c, urlPath, realPath, zipName(urlPath), allow)
 	}
@@ -211,19 +206,12 @@ func (s *Server) share(c fiber.Ctx) (*auth.Share, *shareView, string, bool, erro
 	return sh, view, rel, wantDir, nil
 }
 
-// useLink counts a download through the link sh, if the request is one: of
-// a file's content from its start, or of a zip. Showing a file in the
-// browser is not, so the link's own page does not use it up. A link used
-// as often as it may be is refused from then on.
-func (s *Server) useLink(c fiber.Ctx, sh *auth.Share) error {
-	q := c.Request().URI().QueryArgs()
-	if c.Method() == fiber.MethodHead || q.Has("thumb") || q.Has("inline") {
-		return nil
-	}
-	if r := strings.TrimSpace(c.Get(fiber.HeaderRange)); r != "" && !strings.HasPrefix(r, "bytes=0-") {
-		return nil
-	}
-	return s.spendLink(c, sh)
+// linkUse counts a download of a file through the link sh, for sendContent
+// to call once it knows the file's content is sent from its start. Showing
+// a file in the browser, its page or its thumbnail is not a download, so
+// the link's own pages do not use it up. A zip is always one.
+func (s *Server) linkUse(c fiber.Ctx, sh *auth.Share) func() error {
+	return func() error { return s.spendLink(c, sh) }
 }
 
 // spendLink counts a use of the link sh: a download, or a file sent. A
@@ -550,6 +538,18 @@ func (s *Server) renderShares(c fiber.Ctx, status int, notice, failure string, c
 			ExpiresISO: sh.ExpiresAt.UTC().Format(time.RFC3339)}
 		if sh.IsDir {
 			l.Kind = "folder"
+		}
+		if all && sh.CreatedBy != u.ID {
+			// Superadmins may revoke any link, but learn nothing of
+			// where they may not look, such as others' homes.
+			if ok, err := s.allowed(c, object(sh.Path, sh.IsDir), auth.ActRead); err != nil {
+				return err
+			} else if !ok {
+				l.Name, l.Path, l.Href, l.Kind = "Private file", "", "", "lock"
+				if sh.IsDir {
+					l.Name = "Private folder"
+				}
+			}
 		}
 		if !sh.LastUsedAt.IsZero() {
 			l.LastUsed = sh.LastUsedAt.UTC().Format("Jan 2, 2006 15:04") + " UTC"

@@ -942,7 +942,8 @@
       made.set(key, (async () => {
         const parent = await folderAt(dirs.slice(0, -1), made);
         if (!parent.url) return parent;
-        const name = dirs[dirs.length - 1];
+        // Named as the server names it.
+        const name = dirs[dirs.length - 1].trim();
         let status = 0;
         try {
           status = (await fetch(parent.url, { method: "POST", body: new URLSearchParams({ folder: name }) })).status;

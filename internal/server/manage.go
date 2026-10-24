@@ -252,6 +252,16 @@ func (s *Server) treeError(err error, verb string) error {
 // (at its real path as well), nothing in it may be being written, and no
 // other file system may be mounted in it. It returns the number of entries.
 func (s *Server) checkTree(c fiber.Ctx, dir *os.Root, name, target, realTarget string, acts ...string) (int, error) {
+	return s.checkTreeTo(c, dir, name, target, realTarget, nil, acts...)
+}
+
+// treeDest is where a folder moves to: its new URL path, and where that
+// really is.
+type treeDest struct{ path, real string }
+
+// checkTreeTo is checkTree for a folder that moves to to, where the visitor
+// also needs the right to create every entry, if to is not nil.
+func (s *Server) checkTreeTo(c fiber.Ctx, dir *os.Root, name, target, realTarget string, to *treeDest, acts ...string) (int, error) {
 	sub, err := dir.OpenRoot(name)
 	if err != nil {
 		return 0, err
@@ -283,6 +293,13 @@ func (s *Server) checkTree(c fiber.Ctx, dir *os.Root, name, target, realTarget s
 		}
 		for _, act := range acts {
 			if ok, err := s.mayAt(c, act, path.Join(target, p), path.Join(realTarget, p), d.IsDir()); err != nil {
+				return err
+			} else if !ok {
+				return errDenied
+			}
+		}
+		if to != nil {
+			if ok, err := s.mayAt(c, auth.ActWrite, path.Join(to.path, p), path.Join(to.real, p), d.IsDir()); err != nil {
 				return err
 			} else if !ok {
 				return errDenied
@@ -327,10 +344,15 @@ func (s *Server) rename(c fiber.Ctx, dirPath, from, to string) error {
 			}
 			defer release()
 		}
+		if err := sameEntry(dir, from, info); err != nil {
+			return err
+		}
 		// What is in a folder gets new paths, where other rules may apply:
-		// it may only move if all of it could be read and deleted here.
+		// it may only move if all of it could be read and deleted here,
+		// and created there.
 		if info.IsDir() {
-			_, err := s.checkTree(c, dir, from, src, path.Join(realDir, from), auth.ActRead, auth.ActDelete)
+			_, err := s.checkTreeTo(c, dir, from, src, path.Join(realDir, from), &treeDest{dst, path.Join(realDir, to)},
+				auth.ActRead, auth.ActDelete)
 			if err := s.treeError(err, "rename"); err != nil {
 				return err
 			}
@@ -344,6 +366,15 @@ func (s *Server) rename(c fiber.Ctx, dirPath, from, to string) error {
 		s.log.Info("rename", zap.String("ip", c.IP()), zap.String("user", visitor(c)), zap.String("path", src), zap.String("to", dst))
 	}
 	return s.done(c, dirPath, fiber.StatusCreated, escapePath(object(dst, info.IsDir())), "renamed="+url.QueryEscape(to))
+}
+
+// sameEntry checks that the entry name of dir, now locked, is still the
+// one checked before, as info: not something put in its place meanwhile.
+func sameEntry(dir *os.Root, name string, info fs.FileInfo) error {
+	if now, err := dir.Lstat(name); err != nil || !os.SameFile(info, now) {
+		return explain(fiber.ErrConflict, name+" changed meanwhile: try again.")
+	}
+	return nil
 }
 
 // renameNoReplace renames from to to in dir, unless to exists. Files are
@@ -374,7 +405,7 @@ func renameNoReplace(dir *os.Root, from, to string, info fs.FileInfo) error {
 		}
 		// No hard links here: rename, as checked above.
 	}
-	return dir.Rename(from, to)
+	return renameExclBetween(dir, from, dir, to)
 }
 
 // entry opens the folder at dirPath and looks up its entry name, on which
@@ -459,10 +490,20 @@ func (s *Server) visitorRules(c fiber.Ctx) allowFunc {
 		return r.allow
 	}
 	allow := s.rulesOf(u)
-	// A home someone else left behind must not reach u.
+	// A home someone else left behind must not reach u: u stays out of it
+	// until it can be moved away.
 	if err := s.claimHome(u); err != nil {
 		s.log.Error("claim home", zap.String("user", u.Username), zap.Error(err))
-		allow = func(string, string) (bool, error) { return false, err }
+		home, rules, fold := s.homeOf(u), allow, s.fold
+		if fold == nil {
+			fold = func(p string) string { return p }
+		}
+		allow = func(obj, act string) (bool, error) {
+			if inHome(fold(home), fold(strings.TrimSuffix(obj, "/"))) != "" {
+				return false, nil
+			}
+			return rules(obj, act)
+		}
 	}
 	c.Locals(rulesKey, cached{u, allow})
 	return allow

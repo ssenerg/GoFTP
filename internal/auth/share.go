@@ -84,6 +84,12 @@ func (s *Service) UseShare(ctx context.Context, sh *Share) (bool, error) {
 	return s.store.UseShare(ctx, sh.ID)
 }
 
+// UnuseShare takes back a use of the link id, counted for a file sent
+// through it that was not stored after all.
+func (s *Service) UnuseShare(ctx context.Context, id int64) error {
+	return s.store.UnuseShare(ctx, id)
+}
+
 // TouchShare notes that sh was opened now.
 func (s *Service) TouchShare(ctx context.Context, sh *Share) error {
 	return s.store.TouchShare(ctx, sh.ID)

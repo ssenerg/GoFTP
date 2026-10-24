@@ -49,6 +49,75 @@ func inHome(home, urlPath string) string {
 	return ""
 }
 
+// homeName returns the name of the home that urlPath is in, or is.
+func (s *Server) homeName(urlPath string) (string, bool) {
+	if s.cfg.Homes.Path == "" {
+		return "", false
+	}
+	rest, ok := strings.CutPrefix(urlPath, s.cfg.Homes.Path+"/")
+	name, _, _ := strings.Cut(rest, "/")
+	return name, ok && name != ""
+}
+
+// ownerNow reads whose the home name is now, and since when: when its
+// owner note was written. ok is false if it has no owner.
+func (s *Server) ownerNow(name string) (id int64, since time.Time, ok bool) {
+	dir, err := s.root.OpenRoot(rootName(s.cfg.Homes.Path))
+	if err != nil {
+		return 0, time.Time{}, false
+	}
+	defer dir.Close()
+	if id, _, err = readOwner(dir, name); err != nil || id <= 0 {
+		return 0, time.Time{}, false
+	}
+	info, err := dir.Lstat(path.Join(name, homeOwner))
+	if err != nil {
+		return 0, time.Time{}, false
+	}
+	return id, info.ModTime(), true
+}
+
+// stillTheirs reports whether the trashed entry was deleted outside homes,
+// or from the home of whoever has it now: what a deleted user deleted from
+// their home stays out of reach of a new user of that name, until it
+// expires.
+func (s *Server) stillTheirs(note trashNote) bool {
+	name, ok := s.homeName(note.Path)
+	if !ok {
+		return true
+	}
+	id, since, ok := s.ownerNow(name)
+	switch {
+	case !ok:
+		return false
+	case note.Owner != 0:
+		return note.Owner == id
+	}
+	// Deleted before trash notes named owners: theirs if deleted since
+	// the home became theirs.
+	return !note.At.Before(since)
+}
+
+// warnOldHomes warns if homes are off while their usual folder still holds
+// some: the ordinary rules apply to what is in them now.
+func (s *Server) warnOldHomes() {
+	if s.cfg.Homes.Path != "" {
+		return
+	}
+	d, err := s.root.Open("home")
+	if err != nil {
+		return
+	}
+	entries, _ := d.ReadDir(1000)
+	_ = d.Close()
+	for _, e := range entries {
+		if _, err := s.root.Lstat(path.Join("home", e.Name(), homeOwner)); e.IsDir() && err == nil {
+			s.log.Warn("homes are off, but /home holds homes from before: whoever the rules let in may open them now")
+			return
+		}
+	}
+}
+
 // checkHomes makes the folder of homes, which has to be a folder of its
 // own: through a symlink, the rules of where it leads would apply too.
 func (s *Server) checkHomes() error {
@@ -208,8 +277,11 @@ func (s *Server) trashHome(dir *os.Root, name, by string) (bool, error) {
 	if s.cfg.Trash.Keep == 0 {
 		err = dir.RemoveAll(name)
 	} else {
-		_, err = s.moveToTrash(dir, name, trashNote{Path: path.Join(s.cfg.Homes.Path, name), Dir: info.IsDir(), By: by,
-			At: time.Now().UTC(), Home: true})
+		note := trashNote{Path: path.Join(s.cfg.Homes.Path, name), Dir: info.IsDir(), By: by, At: time.Now().UTC(), Home: true}
+		if owner, _, err := readOwner(dir, name); err == nil && owner > 0 {
+			note.Owner = owner
+		}
+		_, err = s.moveToTrash(dir, name, note)
 	}
 	if err != nil {
 		return true, err

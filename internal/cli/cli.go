@@ -252,7 +252,7 @@ func userCmd() *cobra.Command {
 
 	del := &cobra.Command{
 		Use:   "delete NAME",
-		Short: "Delete a user, their policies and sessions; their home goes to the trash",
+		Short: "Delete a user, their policies and sessions; their home goes to the trash (with the trash off, it is deleted)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withConfig(cmd, func(cfg *config.Config, svc *auth.Service) error {
@@ -266,6 +266,8 @@ func userCmd() *cobra.Command {
 				switch moved, err := server.TrashHome(cfg, "goftp user delete", name); {
 				case err != nil:
 					cmd.PrintErrf("their home stays private, but could not be moved to the trash: %v\n", err)
+				case moved && cfg.Trash.Keep == 0:
+					cmd.Printf("deleted their home, as the trash is off\n")
 				case moved:
 					cmd.Printf("moved their home to the trash\n")
 				}

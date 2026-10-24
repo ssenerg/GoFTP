@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,43 +23,56 @@ import (
 const fileSecurityPolicy = "default-src 'none'; sandbox"
 
 // serveFile streams f (taking ownership of it) as an attachment, with Range
-// and conditional request support.
-func (s *Server) serveFile(c fiber.Ctx, f *os.File, info fs.FileInfo, name string) error {
-	return s.sendContent(c, f, info, name, "", "")
+// and conditional request support. A non-nil use is called before a
+// download is sent, and may refuse it; see sendContent.
+func (s *Server) serveFile(c fiber.Ctx, f *os.File, info fs.FileInfo, name string, use func() error) error {
+	return s.sendContent(c, f, info, name, "", "", use)
 }
 
 // sendContent streams f (taking ownership of it) as serveFile does, or,
 // given the policy to show it with, as ctype to be shown in the browser. An
-// empty ctype is sniffed.
-func (s *Server) sendContent(c fiber.Ctx, f *os.File, info fs.FileInfo, name, ctype, inlinePolicy string) error {
+// empty ctype is sniffed. use, if not nil, is called before content from
+// the start of the file is sent: the whole file, or ranges of it that
+// include its first byte. Ranges further on resume a download that was
+// counted already. An error from use is returned instead.
+func (s *Server) sendContent(c fiber.Ctx, f *os.File, info fs.FileInfo, name, ctype, inlinePolicy string, use func() error) error {
+	size := info.Size()
+	modTime := info.ModTime()
+	etag := `"` + strconv.FormatInt(modTime.UnixNano(), 16) + "-" + strconv.FormatInt(size, 16) + `"`
+	unchanged := notModified(c.Get(fiber.HeaderIfNoneMatch), c.Get(fiber.HeaderIfModifiedSince), etag, modTime)
+	var (
+		ranges   []byteRange
+		rangeErr error
+	)
+	if h := c.Get(fiber.HeaderRange); !unchanged && h != "" && size > 0 && ifRangeMatch(c.Get(fiber.HeaderIfRange), etag, modTime) {
+		ranges, rangeErr = parseRange(h, size)
+	}
+	if use != nil && !unchanged && rangeErr == nil && c.Method() != fiber.MethodHead && fromStart(ranges) {
+		if err := use(); err != nil {
+			_ = f.Close()
+			return err
+		}
+	}
+
 	disposition, policy := "attachment", fileSecurityPolicy
 	if inlinePolicy != "" {
 		disposition, policy = "inline", inlinePolicy
 		c.Set(fiber.HeaderXFrameOptions, "SAMEORIGIN")
 	}
 	c.Set(fiber.HeaderContentSecurityPolicy, policy)
-	size := info.Size()
-	modTime := info.ModTime()
-	etag := `"` + strconv.FormatInt(modTime.UnixNano(), 16) + "-" + strconv.FormatInt(size, 16) + `"`
-
 	c.Set(fiber.HeaderETag, etag)
 	c.Set(fiber.HeaderLastModified, modTime.UTC().Format(http.TimeFormat))
 	c.Set(fiber.HeaderAcceptRanges, "bytes")
 	c.Set(fiber.HeaderCacheControl, "no-store")
 
-	if notModified(c.Get(fiber.HeaderIfNoneMatch), c.Get(fiber.HeaderIfModifiedSince), etag, modTime) {
+	if unchanged {
 		_ = f.Close()
 		return c.SendStatus(fiber.StatusNotModified)
 	}
-
-	var ranges []byteRange
-	if h := c.Get(fiber.HeaderRange); h != "" && size > 0 && ifRangeMatch(c.Get(fiber.HeaderIfRange), etag, modTime) {
-		var err error
-		if ranges, err = parseRange(h, size); err != nil {
-			_ = f.Close()
-			c.Set(fiber.HeaderContentRange, "bytes */"+strconv.FormatInt(size, 10))
-			return fiber.ErrRequestedRangeNotSatisfiable
-		}
+	if rangeErr != nil {
+		_ = f.Close()
+		c.Set(fiber.HeaderContentRange, "bytes */"+strconv.FormatInt(size, 10))
+		return fiber.ErrRequestedRangeNotSatisfiable
 	}
 
 	if ctype == "" {
@@ -85,6 +99,12 @@ func (s *Server) sendContent(c fiber.Ctx, f *os.File, info fs.FileInfo, name, ct
 		c.Set(fiber.HeaderContentType, "multipart/byteranges; boundary="+boundary)
 		return sendStream(c, fiber.StatusPartialContent, body, length)
 	}
+}
+
+// fromStart reports whether sending ranges, or the whole file if there are
+// none, sends the file's first byte.
+func fromStart(ranges []byteRange) bool {
+	return len(ranges) == 0 || slices.ContainsFunc(ranges, func(r byteRange) bool { return r.start == 0 })
 }
 
 func sendStream(c fiber.Ctx, status int, body io.Reader, length int64) error {

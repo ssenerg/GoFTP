@@ -43,6 +43,7 @@ type Service struct {
 	dummy     string
 
 	homes atomic.Value // the folder of users' homes (see SetHomes)
+	fold  atomic.Value // how rules compare paths (see SetFold)
 }
 
 func NewService(store Store, enforcer *casbin.SyncedEnforcer, sessionTTL time.Duration) *Service {

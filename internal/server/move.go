@@ -93,10 +93,14 @@ func (s *Server) moveEntry(c fiber.Ctx, dirPath, name, dest string) (string, err
 		}
 		defer release()
 	}
+	if err := sameEntry(dir, name, info); err != nil {
+		return "", err
+	}
 	// What is in a folder gets new paths, where other rules may apply: it
-	// may only move if all of it could be read and deleted here.
+	// may only move if all of it could be read and deleted here, and
+	// created there.
 	if info.IsDir() {
-		_, err := s.checkTree(c, dir, name, src, realSrc, auth.ActRead, auth.ActDelete)
+		_, err := s.checkTreeTo(c, dir, name, src, realSrc, &treeDest{dst, path.Join(realTo, name)}, auth.ActRead, auth.ActDelete)
 		if err := s.treeError(err, "move"); err != nil {
 			return "", err
 		}
@@ -158,6 +162,10 @@ func (s *Server) copyEntry(c fiber.Ctx, dirPath, name, dest string) (string, err
 		return "", explain(fiber.ErrConflict, "Something named "+name+" is in that folder already.")
 	case errors.Is(err, errDenied):
 		return "", explain(fiber.ErrForbidden, "You may not create everything in it there.")
+	case errors.Is(err, errTooMuch):
+		return "", explain(fiber.ErrConflict, "There is too much in it to copy at once: copy the folders in it one by one.")
+	case errors.Is(err, errChanged):
+		return "", explain(fiber.ErrConflict, "Something in it changed while it was copied: try again.")
 	case err != nil:
 		return "", s.uploadError(nil, err)
 	}
@@ -201,6 +209,8 @@ func within(p, dir string) bool {
 
 // copyFile copies the file at realSrc as the new file name of dst, keeping
 // its modification time. The data goes through a temp file, as uploads do.
+// A file that is no longer at realSrc, where its rights were checked, is
+// not copied (404).
 func (s *Server) copyFile(dst *os.Root, name, realSrc string) error {
 	f, err := s.root.OpenFile(rootName(realSrc), os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
@@ -208,7 +218,10 @@ func (s *Server) copyFile(dst *os.Root, name, realSrc string) error {
 	}
 	defer f.Close()
 	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() || !s.visible(rootName(realSrc), f) {
+	if err != nil || !info.Mode().IsRegular() {
+		return fiber.ErrNotFound
+	}
+	if real, ok := s.resolve(rootName(realSrc), f); !ok || real != realSrc {
 		return fiber.ErrNotFound
 	}
 	if _, _, _, err := s.store(dst, name, f, false, uploadRights{create: true}, io.Copy); err != nil {
@@ -218,33 +231,54 @@ func (s *Server) copyFile(dst *os.Root, name, realSrc string) error {
 	return nil
 }
 
+// Copies stop at maxCopyEntries entries, or folders maxCopyDepth deep:
+// symlinks can make a folder hold far more than is on the disk.
+var (
+	maxCopyEntries = 100_000
+	maxCopyDepth   = 64
+)
+
+var (
+	errTooMuch = errors.New("too much to copy at once")
+	errChanged = errors.New("changed while copied")
+)
+
 // copyFolder copies the folder at urlPath, really at realPath, as the new
 // folder name of dst, at dstPath (really at realDst), and returns how many
 // entries it copied. The rights to create all of it there are checked
-// first, so that a refused copy leaves nothing behind; a copy that fails
-// midway is removed.
+// first, so that a refused copy leaves nothing behind. The copy is made
+// under a hidden name, which nothing else writes in and nothing copied can
+// lead to, and gets its name once complete; a copy that fails midway is
+// removed.
 func (s *Server) copyFolder(dst *os.Root, name, urlPath, realPath, dstPath, realDst string, allow allowFunc) (int, error) {
-	n, err := s.copyTree(nil, urlPath, realPath, dstPath, realDst, allow, []string{realPath})
+	n, err := s.copyTree(nil, urlPath, realPath, dstPath, realDst, allow, []string{realPath}, new(int))
 	if err != nil {
 		return 0, err
 	}
-	release, err := s.acquireLock(dst, name, tempPrefix+rand.Text()+tempSuffix)
+	tmp := tempPrefix + rand.Text() + tempSuffix
+	release, err := s.acquireLock(dst, name, tmp)
 	if err != nil {
 		return 0, err
 	}
 	defer release()
-	if err := dst.Mkdir(name, 0o755); errors.Is(err, fs.ErrExist) {
+	if _, err := dst.Lstat(name); err == nil {
 		return 0, errExists
-	} else if err != nil {
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return 0, err
 	}
-	sub, err := dst.OpenRoot(name)
+	if err := dst.Mkdir(tmp, 0o755); err != nil {
+		return 0, err
+	}
+	sub, err := dst.OpenRoot(tmp)
 	if err == nil {
-		_, err = s.copyTree(sub, urlPath, realPath, dstPath, realDst, allow, []string{realPath})
+		_, err = s.copyTree(sub, urlPath, realPath, dstPath, realDst, allow, []string{realPath}, new(int))
 		_ = sub.Close()
 	}
+	if err == nil {
+		err = renameExclBetween(dst, tmp, dst, name)
+	}
 	if err != nil {
-		_ = dst.RemoveAll(name)
+		_ = dst.RemoveAll(tmp)
 		return 0, err
 	}
 	return n, nil
@@ -254,12 +288,22 @@ func (s *Server) copyFolder(dst *os.Root, name, urlPath, realPath, dstPath, real
 // allow lets the visitor read into the folder dst, at dstPath (really at
 // realDst), and what the folders in it hold in turn, if the visitor may
 // create each copy there (errDenied otherwise). ancestors are the real
-// paths of the folders being copied. Without dst, it only checks. It
-// returns how many entries it copied, or would.
-func (s *Server) copyTree(dst *os.Root, urlPath, realPath, dstPath, realDst string, allow allowFunc, ancestors []string) (int, error) {
+// paths of the folders being copied; total counts the entries met, against
+// maxCopyEntries. Without dst, it only checks. It returns how many entries
+// it copied, or would.
+func (s *Server) copyTree(dst *os.Root, urlPath, realPath, dstPath, realDst string, allow allowFunc, ancestors []string, total *int) (int, error) {
+	if len(ancestors) > maxCopyDepth {
+		return 0, errTooMuch
+	}
 	items, err := s.readable(urlPath, realPath, allow)
+	if errors.Is(err, errChanged) && dst == nil {
+		err = nil
+	}
 	if err != nil {
 		return 0, err
+	}
+	if *total += len(items); *total > maxCopyEntries {
+		return 0, errTooMuch
 	}
 	n := 0
 	for _, it := range items {
@@ -294,7 +338,7 @@ func (s *Server) copyTree(dst *os.Root, urlPath, realPath, dstPath, realDst stri
 				return n, err
 			}
 		}
-		m, err := s.copyTree(sub, it.Path, it.real, target, realTarget, allow, append(ancestors, it.real))
+		m, err := s.copyTree(sub, it.Path, it.real, target, realTarget, allow, append(ancestors, it.real), total)
 		if sub != nil {
 			_ = sub.Close()
 		}
