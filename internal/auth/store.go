@@ -10,6 +10,7 @@ var (
 	ErrNotFound = errors.New("not found")
 	ErrExists   = errors.New("already exists")
 	ErrTooMany  = errors.New("too many")
+	ErrInvalid  = errors.New("invalid")
 )
 
 type User struct {
@@ -21,17 +22,27 @@ type User struct {
 }
 
 // Share is a link that lets people without an account read a file or
-// folder until it expires.
+// folder until it expires, or upload into a folder.
 type Share struct {
 	ID           int64
 	Path         string // URL path of the shared file or folder
 	IsDir        bool
 	PasswordHash string // empty when the link needs no password
-	CreatedBy    int64
-	Creator      string // the username of CreatedBy
-	CreatedAt    time.Time
-	ExpiresAt    time.Time
+	// Upload is set for links to upload into the folder, which do not let
+	// people read it.
+	Upload    bool
+	MaxUses   int // downloads, or files uploaded, it allows; 0 for no limit
+	Uses      int
+	CreatedBy int64
+	Creator   string // the username of CreatedBy
+	CreatedAt time.Time
+	ExpiresAt time.Time
+	// LastUsedAt is when it was last opened or used; zero if never.
+	LastUsedAt time.Time
 }
+
+// UsedUp reports whether the link was used as often as it may be.
+func (sh *Share) UsedUp() bool { return sh.MaxUses > 0 && sh.Uses >= sh.MaxUses }
 
 // Upload is an unfinished resumable upload: Length bytes for the file Name
 // in the folder Dir, of which the hidden file Temp next to it holds what
@@ -44,6 +55,7 @@ type Upload struct {
 	Length    int64
 	Replace   bool // may replace a file of that name
 	Temp      string
+	ShareID   int64 // the upload link it came through, if any
 	CreatedAt time.Time
 	ExpiresAt time.Time
 }
@@ -75,6 +87,14 @@ type Store interface {
 	CreateShare(ctx context.Context, tokenHash []byte, sh *Share) error
 	// ShareByToken returns an unexpired share link.
 	ShareByToken(ctx context.Context, tokenHash []byte) (*Share, error)
+	// ShareByID returns the unexpired share link id.
+	ShareByID(ctx context.Context, id int64) (*Share, error)
+	// UseShare counts a use of the unexpired link id and notes when it
+	// was, unless it was used as often as it may be (false).
+	UseShare(ctx context.Context, id int64) (bool, error)
+	// TouchShare notes that the link id was opened now. It may skip
+	// noting it if it was within the last minute.
+	TouchShare(ctx context.Context, id int64) error
 	// Shares lists the unexpired links created by userID, or by anyone if
 	// userID is 0, newest first.
 	Shares(ctx context.Context, userID int64) ([]Share, error)

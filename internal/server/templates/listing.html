@@ -63,7 +63,7 @@
         <summary class="btn"><svg class="i" aria-hidden="true"><use href="#i-link"/></svg>Share</summary>
         <form method="post" action="/.shares/" class="popover share-form" data-name="{{.Title}}">
           <input type="hidden" name="action" value="create"><input type="hidden" name="path" value="{{.Path}}">
-          {{template "share-fields"}}
+          {{template "share-fields" true}}
         </form>
       </details>
       {{end}}
@@ -209,7 +209,7 @@
 </form>
 <form method="post" action="/.shares/" class="item-form share-form" data-kind="share"{{if not .CanShare}} hidden{{end}}>
   <input type="hidden" name="action" value="create"><input type="hidden" name="path" value="{{.Path}}">
-  {{template "share-fields"}}
+  {{template "share-fields" .IsDir}}
 </form>
 <form method="post" action="{{.Action}}" class="item-form" data-kind="delete" data-trash="{{.TrashKeep}}"{{if not .CanDelete}} hidden{{end}}>
   <input type="hidden" name="delete" value="{{.Name}}">
@@ -226,6 +226,9 @@
 
 {{define "share-fields"}}
 <p class="form-title"><svg class="i" aria-hidden="true"><use href="#i-link"/></svg>Share a link</p>
+<label class="field share-kind"{{if not .}} hidden{{end}}><span>People with it may</span>
+  <select name="kind"><option value="read" selected>Open and download what is here</option><option value="upload">Upload files here, without seeing them</option></select>
+</label>
 <div class="share-row">
   <label class="field"><span>Expires in</span>
     <select name="expires">{{range expiryOptions}}<option value="{{.Value}}"{{if .Default}} selected{{end}}>{{.Label}}</option>{{end}}</select>
@@ -234,6 +237,9 @@
     <input type="password" name="password" minlength="8" maxlength="256" autocomplete="new-password" placeholder="None">
   </label>
 </div>
+<label class="field"><span>Stop after <span class="opt">(optional)</span></span>
+  <span class="share-limit"><input type="number" name="max_uses" min="1" max="1000000" inputmode="numeric" placeholder="Any number of"><span class="share-noun">downloads</span></span>
+</label>
 <p class="popover-error" role="alert" hidden></p>
 <div class="popover-actions"><button type="submit" class="btn primary small"><svg class="i" aria-hidden="true"><use href="#i-link"/></svg>Create link</button></div>
 {{end}}

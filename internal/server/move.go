@@ -211,7 +211,7 @@ func (s *Server) copyFile(dst *os.Root, name, realSrc string) error {
 	if err != nil || !info.Mode().IsRegular() || !s.visible(rootName(realSrc), f) {
 		return fiber.ErrNotFound
 	}
-	if _, _, err := s.store(dst, name, f, false, uploadRights{create: true}, io.Copy); err != nil {
+	if _, _, _, err := s.store(dst, name, f, false, uploadRights{create: true}, io.Copy); err != nil {
 		return err
 	}
 	_ = dst.Chtimes(name, time.Now(), info.ModTime())

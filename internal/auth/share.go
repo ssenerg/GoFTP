@@ -19,12 +19,31 @@ const (
 	MinSharePasswordLength = 8
 )
 
-// CreateShare creates a link to the file or folder at path for u, which
-// works for ttl, and returns its token. With a password, visitors need it
-// too.
-func (s *Service) CreateShare(ctx context.Context, u *User, path string, isDir bool, ttl time.Duration, password string) (string, *Share, error) {
-	sh := &Share{Path: path, IsDir: isDir, CreatedBy: u.ID, Creator: u.Username, ExpiresAt: time.Now().Add(ttl)}
-	if password != "" {
+// MaxShareUses bounds the uses a link may be limited to.
+const MaxShareUses = 1_000_000
+
+// ShareOptions describe a new link.
+type ShareOptions struct {
+	TTL      time.Duration // how long it works
+	Password string        // visitors need it too, if set
+	// Upload makes a link to upload into the folder, which does not let
+	// people read it.
+	Upload  bool
+	MaxUses int // downloads, or files uploaded, it allows; 0 for no limit
+}
+
+// CreateShare creates a link to the file or folder at path for u, and
+// returns its token. Upload links lead to folders.
+func (s *Service) CreateShare(ctx context.Context, u *User, path string, isDir bool, opts ShareOptions) (string, *Share, error) {
+	if opts.Upload && !isDir {
+		return "", nil, fmt.Errorf("%w: upload links lead to folders", ErrInvalid)
+	}
+	if opts.MaxUses < 0 || opts.MaxUses > MaxShareUses {
+		return "", nil, fmt.Errorf("%w: a link may be used at most %d times", ErrInvalid, MaxShareUses)
+	}
+	sh := &Share{Path: path, IsDir: isDir, Upload: opts.Upload, MaxUses: opts.MaxUses, CreatedBy: u.ID, Creator: u.Username,
+		ExpiresAt: time.Now().Add(opts.TTL)}
+	if password := opts.Password; password != "" {
 		switch {
 		case utf8.RuneCountInString(password) < MinSharePasswordLength:
 			return "", nil, fmt.Errorf("%w: use at least %d characters", ErrWeakPassword, MinSharePasswordLength)
@@ -51,6 +70,23 @@ func (s *Service) ShareByToken(ctx context.Context, token string) (*Share, error
 		return nil, ErrNotFound
 	}
 	return s.store.ShareByToken(ctx, tokenHash(token))
+}
+
+// ShareByID returns the link id, unless it expired or was revoked
+// (ErrNotFound).
+func (s *Service) ShareByID(ctx context.Context, id int64) (*Share, error) {
+	return s.store.ShareByID(ctx, id)
+}
+
+// UseShare counts a use of sh: a download, or a file uploaded. It reports
+// false if sh was used as often as it may be, or ended.
+func (s *Service) UseShare(ctx context.Context, sh *Share) (bool, error) {
+	return s.store.UseShare(ctx, sh.ID)
+}
+
+// TouchShare notes that sh was opened now.
+func (s *Service) TouchShare(ctx context.Context, sh *Share) error {
+	return s.store.TouchShare(ctx, sh.ID)
 }
 
 // ValidToken reports whether token could be a session or link token.

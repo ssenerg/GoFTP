@@ -176,6 +176,12 @@
   const shareForm = (form, name) => {
     const error = $(".popover-error", form);
     const submit = $("button[type=submit]", form);
+    // What a use is depends on what the link lets people do.
+    const noun = $(".share-noun", form);
+    const kind = form.elements.kind;
+    kind.addEventListener("change", () => {
+      noun.textContent = kind.value === "upload" ? "files sent" : "downloads";
+    });
     form.addEventListener("submit", async e => {
       e.preventDefault();
       submit.disabled = true;
@@ -200,6 +206,7 @@
         return;
       }
       const password = form.elements.password.value !== "";
+      const limit = link.max_uses ? `, for ${link.max_uses} ${link.upload ? "files" : "downloads"} at most` : "";
       const title = document.createElement("p");
       title.className = "form-title";
       title.append(icon("check"), "Link created");
@@ -211,8 +218,8 @@
       url.addEventListener("focus", () => url.select());
       const note = document.createElement("p");
       note.className = "share-note";
-      note.textContent = `Anyone with it${password ? " and the password" : ""} can open “${name}” until ` +
-        `${when.format(new Date(link.expires_at))}. Copy it now: it is shown only this once.`;
+      note.textContent = `Anyone with it${password ? " and the password" : ""} can ${link.upload ? "upload files to" : "open"} “${name}” ` +
+        `until ${when.format(new Date(link.expires_at))}${limit}. Copy it now: it is shown only this once.`;
       const result = document.createElement("div");
       result.className = "share-result";
       result.append(title, url);
@@ -343,6 +350,8 @@
         form.hidden = link.dataset[kind] !== "true";
         if (kind === "share") {
           form.elements.path.value = link.dataset.path;
+          // Only folders take uploads.
+          $(".share-kind", form).hidden = !isDir;
           shareForm(form, name);
           continue;
         }
@@ -654,6 +663,8 @@
   if (!form) return;
   const picker = $("input[type=file]", form);
   const replace = $("input[name=replace]", form);
+  // Upload links take files, but show nothing of the folder.
+  const dropbox = form.dataset.dropbox === "true";
   const panel = $("#transfers");
   const overlay = $("#drop");
   let active = 0;
@@ -676,7 +687,7 @@
       const refresh = document.createElement("a");
       refresh.href = form.action;
       refresh.className = "btn small";
-      refresh.textContent = "Refresh list";
+      refresh.textContent = dropbox ? "Start over" : "Refresh list";
       h.append(text, refresh);
     } else {
       text.textContent = "Unfinished uploads";
@@ -704,10 +715,11 @@
       case 0: return "The connection was lost.";
       case 400: return "This file name is not allowed.";
       case 401: return "You were signed out. Sign in and try again.";
-      case 403: return replace && !replace.checked
-        ? "You may not upload this here."
-        : "You may not upload or replace this here.";
-      case 404: return "This folder is no longer here.";
+      case 403:
+        if (dropbox) return "This link no longer lets anyone send files.";
+        return replace && !replace.checked ? "You may not upload this here." : "You may not upload or replace this here.";
+      case 404: return dropbox ? "This link no longer works." : "This folder is no longer here.";
+      case 410: return "This link was used as often as it may be.";
       case 409: return replace && !replace.checked
         ? "Already exists: tick “Replace files that already exist”, or rename it."
         : "A file or folder with this name exists or is being uploaded.";

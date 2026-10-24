@@ -91,8 +91,9 @@ func setExpires(c fiber.Ctx, up *auth.Upload) {
 // creation). Upload-Length gives the file's size; Upload-Metadata its name
 // as filename and, with replace set to 1, that it may replace a file of
 // that name. Everything is checked as for other uploads, so a doomed
-// upload is refused before its data is sent.
-func (s *Server) createUpload(c fiber.Ctx, dirPath string) error {
+// upload is refused before its data is sent. Through the upload link sh,
+// it has the link's rights, and a taken name gets a number instead.
+func (s *Server) createUpload(c fiber.Ctx, dirPath string, sh *auth.Share) error {
 	if err := tusRequest(c); err != nil {
 		return err
 	}
@@ -108,40 +109,53 @@ func (s *Server) createUpload(c fiber.Ctx, dirPath string) error {
 	if !ok || !validName(name) {
 		return explain(fiber.ErrBadRequest, badName)
 	}
-	replace := meta["replace"] == "1"
+	replace := meta["replace"] == "1" && sh == nil
 	if limit := int64(s.cfg.Upload.MaxSize); limit > 0 && length > limit {
 		return fiber.ErrRequestEntityTooLarge
 	}
+	allow, deny := s.visitorRules(c), func() error { return s.deny(c) }
+	if sh != nil {
+		allow, deny = s.linkUploadRules(sh), linkClosed
+	}
 	urlPath := path.Join(dirPath, name)
-	if create, mayReplace, err := s.uploadRights(c, urlPath); err != nil {
+	if create, mayReplace, err := uploadRightsOf(allow, urlPath); err != nil {
 		return err
 	} else if !create && !mayReplace {
-		return s.deny(c)
+		return deny()
 	}
 	dir, realDir, err := s.uploadDir(dirPath)
 	if err != nil {
 		return err
 	}
 	defer dir.Close()
-	create, mayReplace, err := s.uploadRightsAt(c, urlPath, path.Join(realDir, name))
+	create, mayReplace, err := uploadRightsAtOf(allow, urlPath, path.Join(realDir, name))
 	if err != nil {
 		return err
 	} else if !create && !mayReplace {
-		return s.deny(c)
+		return deny()
 	}
-	rights := uploadRights{create: create, replace: mayReplace}
-	if s.locked(rootName(dirPath), name) {
-		return fiber.ErrConflict
-	}
-	if _, err := checkTarget(dir, name, replace, rights); errors.Is(err, errExists) {
-		return fiber.ErrConflict
-	} else if err != nil {
-		return err
+	rights := uploadRights{create: create, replace: mayReplace, rename: sh != nil}
+	if !rights.rename {
+		if s.locked(rootName(dirPath), name) {
+			return fiber.ErrConflict
+		}
+		if _, err := checkTarget(dir, name, replace, rights); errors.Is(err, errExists) {
+			return fiber.ErrConflict
+		} else if err != nil {
+			return err
+		}
 	}
 
 	up := &auth.Upload{Dir: dirPath, Name: name, Length: length, Replace: replace, Temp: tempPrefix + rand.Text() + partialSuffix}
 	if u := userOf(c); u != nil {
 		up.UserID = u.ID
+	}
+	if sh != nil {
+		// Each file sent counts as a use of the link.
+		if err := s.spendLink(c, sh); err != nil {
+			return err
+		}
+		up.ShareID = sh.ID
 	}
 	f, err := dir.OpenFile(up.Temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
@@ -237,9 +251,16 @@ func (s *Server) patchUpload(c fiber.Ctx) error {
 		return fiber.ErrRequestEntityTooLarge
 	}
 	urlPath := path.Join(up.Dir, up.Name)
-	if create, replace, err := s.uploadRights(c, urlPath); err != nil {
+	allow, err := s.uploadAllow(c, up)
+	if err != nil {
+		return err
+	}
+	if create, replace, err := uploadRightsOf(allow, urlPath); err != nil {
 		return err
 	} else if !create && !replace {
+		if up.ShareID != 0 {
+			return linkClosed()
+		}
 		return s.deny(c)
 	}
 
@@ -308,14 +329,39 @@ func (s *Server) patchUpload(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
 	}
 
-	create, replace, err := s.uploadRightsAt(c, urlPath, path.Join(realDir, up.Name))
+	create, replace, err := uploadRightsAtOf(allow, urlPath, path.Join(realDir, up.Name))
 	if err != nil {
 		return err
 	}
-	if err := s.completeUpload(c, dir, up, uploadRights{create: create, replace: replace}); err != nil {
+	if err := s.completeUpload(c, dir, up, uploadRights{create: create, replace: replace, rename: up.ShareID != 0}); err != nil {
 		return err
 	}
 	return c.SendStatus(fiber.StatusNoContent)
+}
+
+// uploadAllow returns the rules an unfinished upload is written with: the
+// visitor's, or those of the upload link it came through, while that works.
+func (s *Server) uploadAllow(c fiber.Ctx, up *auth.Upload) (allowFunc, error) {
+	if up.ShareID == 0 {
+		return s.visitorRules(c), nil
+	}
+	ctx, cancel := dbContext(c)
+	defer cancel()
+	sh, err := s.auth.ShareByID(ctx, up.ShareID)
+	if errors.Is(err, auth.ErrNotFound) {
+		s.dropUpload(up)
+		return nil, explain(fiber.ErrNotFound, deadLink)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.linkUploadRules(sh), nil
+}
+
+// linkClosed refuses an upload through a link whose creator may no longer
+// add files where it leads.
+func linkClosed() error {
+	return explain(fiber.ErrForbidden, "This link no longer lets anyone send files.")
 }
 
 // completeUpload stores a complete upload under its name, as receive does
@@ -332,12 +378,17 @@ func (s *Server) completeUpload(c fiber.Ctx, dir *os.Root, up *auth.Upload, righ
 		return err
 	}
 	defer release()
-	created, err := checkTarget(dir, up.Name, up.Replace, rights)
-	if errors.Is(err, errExists) {
-		err = fiber.ErrConflict
-	}
-	if err == nil {
-		err = place(dir, up.Temp, up.Name, up.Replace, rights)
+	name, created := up.Name, true
+	switch {
+	case rights.rename && !rights.create:
+		err = fiber.ErrForbidden
+	case rights.rename:
+		name, err = s.placeFree(dir, up.Temp, up.Name)
+	default:
+		created, err = checkTarget(dir, up.Name, up.Replace, rights)
+		if err == nil {
+			err = place(dir, up.Temp, up.Name, up.Replace, rights)
+		}
 	}
 	if errors.Is(err, errExists) {
 		err = fiber.ErrConflict
@@ -362,7 +413,7 @@ func (s *Server) completeUpload(c fiber.Ctx, dir *os.Root, up *auth.Upload, righ
 	if err := s.auth.DeleteUpload(ctx, up.ID); err != nil {
 		s.log.Warn("forget upload", zap.Int64("upload", up.ID), zap.Error(err))
 	}
-	s.logUpload(c, path.Join(up.Dir, up.Name), up.Length, created)
+	s.logUpload(c, path.Join(up.Dir, name), up.Length, created)
 	return nil
 }
 

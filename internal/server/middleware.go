@@ -183,6 +183,7 @@ var errorMessages = map[int]string{
 	fiber.StatusForbidden:             "You don't have access to this. Ask an administrator if you need it.",
 	fiber.StatusNotFound:              "There is nothing here. It may have been moved or deleted, or it is still being uploaded.",
 	fiber.StatusConflict:              "A file or folder with this name already exists, or is being uploaded right now.",
+	fiber.StatusGone:                  "This link no longer works.",
 	fiber.StatusRequestEntityTooLarge: "The file is larger than this server accepts.",
 	fiber.StatusTooManyRequests:       "Too many attempts. Wait a moment and try again.",
 	fiber.StatusServiceUnavailable:    "The server is busy. Try again in a moment.",

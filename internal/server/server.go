@@ -48,6 +48,8 @@ type Server struct {
 	// trashMu orders restoring entries from the trash against removing
 	// them for good.
 	trashMu sync.Mutex
+	// touched notes when links were last noted as used, by ID.
+	touched sync.Map
 	// proxyNoted is set once untrusted proxy headers have been logged.
 	proxyNoted atomic.Bool
 
@@ -140,7 +142,7 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 	s.app.Get(strings.TrimSuffix(searchPath, "/"), func(c fiber.Ctx) error { return s.redirect(c, searchPath) })
 	s.app.Get(searchPath, s.search)
 	s.app.Get(sharePrefix+"*", s.shared)
-	s.app.Post(sharePrefix+"*", s.unlockShare)
+	s.app.Post(sharePrefix+"*", s.sharePost)
 	s.app.Head(uploadsPrefix+"*", s.headUpload)
 	s.app.Patch(uploadsPrefix+"*", s.patchUpload)
 	s.app.Delete(uploadsPrefix+"*", s.deleteUpload)

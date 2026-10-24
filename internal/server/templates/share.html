@@ -16,7 +16,28 @@
       <button type="submit" class="btn primary block">Open</button>
     </form>
   </div>
-  {{else}}{{with .File}}
+  {{else if .Dropbox}}{{with .Dropbox}}
+  <div class="card share-card dropbox">
+    <span class="share-icon" aria-hidden="true"><svg class="i"><use href="#i-upload"/></svg></span>
+    <h1>Send files to {{.Name}}</h1>
+    <p class="muted">{{with $.Share}}{{.By}} asked for them. {{end}}You can send files here, but not see what is here.</p>
+    {{if .Uploaded}}<div class="alert success" id="uploaded" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg><span>Sent {{.Uploaded}} file{{if ne .Uploaded 1}}s{{end}}. Thank you.</span></div>{{end}}
+    <form id="upload" class="upload" method="post" enctype="multipart/form-data" action="{{.Action}}" data-dropbox="true">
+      <div class="dropzone">
+        <input type="file" name="file" multiple required aria-label="Choose files to send">
+        <span class="dz-icon" aria-hidden="true"><svg class="i"><use href="#i-upload"/></svg></span>
+        <div class="dz-text">
+          <p class="pointer"><strong>Drop files here</strong> or click to choose them</p>
+          <p class="touch"><strong>Tap to choose files</strong> to send</p>
+        </div>
+      </div>
+      <noscript><div class="upload-options"><span></span><button type="submit" class="btn primary small">Send</button></div></noscript>
+    </form>
+    <section id="transfers" class="card transfers" aria-live="polite" hidden></section>
+    <div id="drop" class="drop-overlay" hidden><div><svg class="i" aria-hidden="true"><use href="#i-upload"/></svg>Drop to send to <strong>{{.Name}}</strong></div></div>
+    <p class="muted small">{{with $.Share}}Link expires <time datetime="{{.ExpiresISO}}">{{.Expires}}</time>{{end}}{{if .Left}} · {{.Left}} more file{{if ne .Left 1}}s{{end}} may be sent{{end}}</p>
+  </div>
+  {{end}}{{else}}{{with .File}}
   <div class="card share-card">
     {{if eq .Preview "image"}}<img class="share-preview" src="{{.Src}}" alt="{{.Name}}">
     {{else if eq .Preview "video"}}<video class="share-preview" src="{{.Src}}" controls preload="metadata"></video>

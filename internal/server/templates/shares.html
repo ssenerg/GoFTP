@@ -13,7 +13,7 @@
   <div class="alert success banner onetime" role="status">
     <svg class="i" aria-hidden="true"><use href="#i-check"/></svg>
     <div>
-      <p>Anyone with this link{{if .Password}} and its password{{end}} can open <strong>{{.Name}}</strong> until <time datetime="{{.ExpiresISO}}">{{.Expires}}</time>:</p>
+      <p>Anyone with this link{{if .Password}} and its password{{end}} can {{if .Upload}}upload files to{{else}}open{{end}} <strong>{{.Name}}</strong> until <time datetime="{{.ExpiresISO}}">{{.Expires}}</time>{{with .MaxUses}}, {{.}} at most{{end}}:</p>
       <p class="copyable"><code id="share-link">{{.URL}}</code><button type="button" class="btn small" data-copy="share-link" hidden><svg class="i" aria-hidden="true"><use href="#i-copy"/></svg>Copy</button></p>
       <p class="onetime-note">Copy it now: it is shown only here, once.</p>
     </div>
@@ -25,15 +25,19 @@
   <div class="card">
     {{if .Links}}
     <table class="files list-table">
-      <thead><tr><th>Link to</th>{{if .All}}<th>By</th>{{end}}<th>Expires</th><th class="act"><span class="vh">Revoke</span></th></tr></thead>
+      <thead><tr><th>Link to</th>{{if .All}}<th>By</th>{{end}}<th>Used</th><th>Expires</th><th class="act"><span class="vh">Revoke</span></th></tr></thead>
       <tbody>
         {{range .Links}}
         <tr>
           <td class="name"><span class="link-cell">
-            <a href="{{.Href}}"><svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><span>{{.Name}}</span>{{if .Password}}<span class="chip" title="Visitors need a password"><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg>password</span>{{end}}</a>
+            <a href="{{.Href}}"><svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><span>{{.Name}}</span>
+              {{- if .Upload}}<span class="chip" title="Visitors may upload files here, without seeing what is here"><svg class="i" aria-hidden="true"><use href="#i-upload"/></svg>upload</span>{{end}}
+              {{- if .Password}}<span class="chip" title="Visitors need a password"><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg>password</span>{{end}}
+              {{- if .UsedUp}}<span class="chip warn" title="It was used as often as it may be, so it no longer works">used up</span>{{end}}</a>
             <span class="where">{{.Path}}</span>
           </span></td>
           {{if $.All}}<td><span class="cell-label">By </span>{{.By}}</td>{{end}}
+          <td><span class="cell-label">Used </span>{{.Uses}}<span class="faint">{{if .LastUsed}}, last <time datetime="{{.LastUsedISO}}">{{.LastUsed}}</time>{{else}}, never opened{{end}}</span></td>
           <td><span class="cell-label">Expires </span><time datetime="{{.ExpiresISO}}">{{.Expires}}</time></td>
           <td class="act">
             <details class="confirm">

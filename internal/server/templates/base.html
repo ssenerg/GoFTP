@@ -223,7 +223,7 @@
   .btn.small { height: 32px; padding: 0 12px; font-size: 13px; }
   .field { display: flex; flex-direction: column; gap: 6px; }
   .field > span:first-child { font-size: 13px; font-weight: 600; color: var(--muted); }
-  input[type=text], input[type=search], input[type=password], input:not([type]) {
+  input[type=text], input[type=search], input[type=password], input[type=number], input:not([type]) {
     width: 100%;
     height: 42px;
     padding: 0 12px;
@@ -395,7 +395,13 @@
   .delete-note { color: var(--muted); font-size: 13px; }
   .form-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--muted); }
   .share-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 10px; }
-  .share-row select { height: 38px; width: 100%; }
+  .share-row select, .share-kind select { height: 38px; width: 100%; }
+  .share-limit { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; }
+  .share-limit input { width: 130px; flex: none; }
+  .dropbox { align-items: stretch; text-align: center; }
+  .dropbox > .share-icon { align-self: center; }
+  .dropbox .upload, .dropbox .transfers { margin: 8px 0 0; text-align: left; }
+  .dropbox .alert { text-align: left; }
   .field .opt { font-weight: 400; color: var(--faint); }
   .share-result { display: flex; flex-direction: column; gap: 10px; }
   .share-result .form-title { color: var(--success); }

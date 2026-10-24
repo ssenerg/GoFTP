@@ -36,7 +36,7 @@ func TestShares(t *testing.T) {
 		}
 		ann, ben := userNamed(t, svc, "ann"), userNamed(t, svc, "ben")
 
-		token, sh, err := svc.CreateShare(ctx, ann, "/docs", true, time.Hour, "")
+		token, sh, err := svc.CreateShare(ctx, ann, "/docs", true, auth.ShareOptions{TTL: time.Hour})
 		if err != nil || sh.ID == 0 || !auth.ValidToken(token) {
 			t.Fatalf("CreateShare: %q %+v %v", token, sh, err)
 		}
@@ -50,7 +50,7 @@ func TestShares(t *testing.T) {
 				t.Errorf("ShareByToken(%q): %v", bad, err)
 			}
 		}
-		expired, _, err := svc.CreateShare(ctx, ann, "/old.txt", false, -time.Second, "")
+		expired, _, err := svc.CreateShare(ctx, ann, "/old.txt", false, auth.ShareOptions{TTL: -time.Second})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -60,11 +60,11 @@ func TestShares(t *testing.T) {
 
 		// Passwords: short ones are refused, only a hash is kept.
 		for _, pw := range []string{"short", "seven 7", strings.Repeat("x", 257)} {
-			if _, _, err := svc.CreateShare(ctx, ann, "/x.txt", false, time.Hour, pw); !errors.Is(err, auth.ErrWeakPassword) {
+			if _, _, err := svc.CreateShare(ctx, ann, "/x.txt", false, auth.ShareOptions{TTL: time.Hour, Password: pw}); !errors.Is(err, auth.ErrWeakPassword) {
 				t.Errorf("password %q: %v", pw, err)
 			}
 		}
-		locked, _, err := svc.CreateShare(ctx, ann, "/x.txt", false, time.Hour, "correct horse")
+		locked, _, err := svc.CreateShare(ctx, ann, "/x.txt", false, auth.ShareOptions{TTL: time.Hour, Password: "correct horse"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -140,7 +140,7 @@ func TestShares(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		bens, _, err := svc.CreateShare(ctx, sess.User, "/b/", true, time.Hour, "")
+		bens, _, err := svc.CreateShare(ctx, sess.User, "/b/", true, auth.ShareOptions{TTL: time.Hour})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -162,8 +162,70 @@ func TestShares(t *testing.T) {
 		if _, err := svc.ShareByToken(ctx, bens); !errors.Is(err, auth.ErrNotFound) {
 			t.Errorf("a link survived its creator: %v", err)
 		}
-		if _, _, err := svc.CreateShare(ctx, ben, "/b/", true, time.Hour, ""); !errors.Is(err, auth.ErrNotFound) {
+		if _, _, err := svc.CreateShare(ctx, ben, "/b/", true, auth.ShareOptions{TTL: time.Hour}); !errors.Is(err, auth.ErrNotFound) {
 			t.Errorf("a deleted user created a link: %v", err)
+		}
+	})
+}
+
+// Links can be upload links, limited in uses, and know when they were
+// last used.
+func TestShareUses(t *testing.T) {
+	services(t, func(t *testing.T, svc *auth.Service) {
+		ctx := context.Background()
+		if _, err := svc.CreateUser(ctx, "ann", "admin"); err != nil {
+			t.Fatal(err)
+		}
+		ann := userNamed(t, svc, "ann")
+		for _, opts := range []auth.ShareOptions{{TTL: time.Hour, Upload: true}, {TTL: time.Hour, MaxUses: -1}, {TTL: time.Hour, MaxUses: auth.MaxShareUses + 1}} {
+			if _, _, err := svc.CreateShare(ctx, ann, "/f.txt", false, opts); !errors.Is(err, auth.ErrInvalid) {
+				t.Errorf("%+v: %v", opts, err)
+			}
+		}
+		token, sh, err := svc.CreateShare(ctx, ann, "/inbox", true, auth.ShareOptions{TTL: time.Hour, Upload: true, MaxUses: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := svc.ShareByToken(ctx, token)
+		if err != nil || !got.Upload || got.MaxUses != 2 || got.Uses != 0 || !got.LastUsedAt.IsZero() || got.UsedUp() {
+			t.Fatalf("ShareByToken: %+v %v", got, err)
+		}
+		if err := svc.TouchShare(ctx, got); err != nil {
+			t.Fatal(err)
+		}
+		if byID, err := svc.ShareByID(ctx, sh.ID); err != nil || byID.Path != "/inbox" || byID.Creator != "ann" || time.Since(byID.LastUsedAt) > time.Minute {
+			t.Errorf("ShareByID: %+v %v", byID, err)
+		}
+		for i, want := range []bool{true, true, false} {
+			if ok, err := svc.UseShare(ctx, got); ok != want || err != nil {
+				t.Errorf("use %d: %v %v", i+1, ok, err)
+			}
+		}
+		if got, _ = svc.ShareByToken(ctx, token); got.Uses != 2 || !got.UsedUp() {
+			t.Errorf("after its uses: %+v", got)
+		}
+		// Without a limit, uses are just counted.
+		free, _, err := svc.CreateShare(ctx, ann, "/f.txt", false, auth.ShareOptions{TTL: time.Hour})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fsh, _ := svc.ShareByToken(ctx, free)
+		for range 3 {
+			if ok, err := svc.UseShare(ctx, fsh); !ok || err != nil {
+				t.Fatalf("use: %v %v", ok, err)
+			}
+		}
+		if fsh, _ = svc.ShareByToken(ctx, free); fsh.Uses != 3 || fsh.UsedUp() {
+			t.Errorf("unlimited link: %+v", fsh)
+		}
+		if err := svc.RevokeShare(ctx, ann, fsh.ID, false); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := svc.UseShare(ctx, fsh); ok || err != nil {
+			t.Errorf("using a revoked link: %v %v", ok, err)
+		}
+		if _, err := svc.ShareByID(ctx, fsh.ID); !errors.Is(err, auth.ErrNotFound) {
+			t.Errorf("ShareByID of a revoked link: %v", err)
 		}
 	})
 }
@@ -175,15 +237,15 @@ func TestShareLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	ann := userNamed(t, svc, "ann")
-	if _, _, err := svc.CreateShare(ctx, ann, "/gone", false, -time.Second, ""); err != nil {
+	if _, _, err := svc.CreateShare(ctx, ann, "/gone", false, auth.ShareOptions{TTL: -time.Second}); err != nil {
 		t.Fatal(err)
 	}
 	for i := range auth.MaxShares {
-		if _, _, err := svc.CreateShare(ctx, ann, "/f", false, time.Hour, ""); err != nil {
+		if _, _, err := svc.CreateShare(ctx, ann, "/f", false, auth.ShareOptions{TTL: time.Hour}); err != nil {
 			t.Fatalf("link %d: %v", i, err)
 		}
 	}
-	if _, _, err := svc.CreateShare(ctx, ann, "/f", false, time.Hour, ""); !errors.Is(err, auth.ErrTooMany) {
+	if _, _, err := svc.CreateShare(ctx, ann, "/f", false, auth.ShareOptions{TTL: time.Hour}); !errors.Is(err, auth.ErrTooMany) {
 		t.Errorf("one link too many: %v", err)
 	}
 }
