@@ -37,6 +37,12 @@
     <div>
       <h1>{{.Title}}{{if and .User (not .Upload)}} <span class="chip">View only</span>{{end}}</h1>
       <p class="summary">{{.Summary}}{{with .Share}} · Link expires <time datetime="{{.ExpiresISO}}">{{.Expires}}</time>{{end}}</p>
+      {{with .Usage}}
+      <div class="usage{{if .Full}} full{{end}}">
+        {{if .Quota}}<span class="usage-bar" role="meter" aria-label="Space used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{.Percent}}"><span style="width: {{.Percent}}%"></span></span>{{end}}
+        <span>{{.Used}}{{with .Quota}} of {{.}}{{end}} used{{with .Trash}}, {{.}} of it in the <a href="/.trash/">trash</a>{{end}}</span>
+      </div>
+      {{end}}
     </div>
     <div class="tools">
       {{if and .Items .Shared}}
@@ -237,9 +243,14 @@
     <input type="password" name="password" minlength="8" maxlength="256" autocomplete="new-password" placeholder="None">
   </label>
 </div>
-<label class="field share-limit"><span><span class="share-noun">Downloads</span> allowed <span class="opt">(optional)</span></span>
-  <input type="number" name="max_uses" min="1" max="1000000" inputmode="numeric" placeholder="No limit">
-</label>
+<div class="share-row share-limits">
+  <label class="field share-limit"><span><span class="share-noun">Downloads</span> allowed <span class="opt">(optional)</span></span>
+    <input type="number" name="max_uses" min="1" max="1000000" inputmode="numeric" placeholder="No limit">
+  </label>
+  <label class="field share-size" hidden><span>Up to, in all <span class="opt">(optional)</span></span>
+    <input name="max_size" maxlength="20" autocomplete="off" spellcheck="false" placeholder="No limit, or 2 GiB" pattern="\s*[0-9]+(\.[0-9]+)?\s*([KkMmGgTt][Ii]?[Bb]|[Bb])?\s*" title="A size such as 500 MiB or 2 GiB">
+  </label>
+</div>
 <p class="popover-error" role="alert" hidden></p>
 <div class="popover-actions"><button type="submit" class="btn primary small"><svg class="i" aria-hidden="true"><use href="#i-link"/></svg>Create link</button></div>
 {{end}}

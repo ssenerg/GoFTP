@@ -30,6 +30,9 @@ type ShareOptions struct {
 	// people read it.
 	Upload  bool
 	MaxUses int // downloads, or files uploaded, it allows; 0 for no limit
+	// MaxBytes is how much may be sent through an upload link; 0 for no
+	// limit.
+	MaxBytes int64
 }
 
 // CreateShare creates a link to the file or folder at path for u, and
@@ -41,8 +44,11 @@ func (s *Service) CreateShare(ctx context.Context, u *User, path string, isDir b
 	if opts.MaxUses < 0 || opts.MaxUses > MaxShareUses {
 		return "", nil, fmt.Errorf("%w: a link may be used at most %d times", ErrInvalid, MaxShareUses)
 	}
-	sh := &Share{Path: path, IsDir: isDir, Upload: opts.Upload, MaxUses: opts.MaxUses, CreatedBy: u.ID, Creator: u.Username,
-		ExpiresAt: time.Now().Add(opts.TTL)}
+	if opts.MaxBytes < 0 || opts.MaxBytes > 0 && !opts.Upload {
+		return "", nil, fmt.Errorf("%w: only upload links take a size", ErrInvalid)
+	}
+	sh := &Share{Path: path, IsDir: isDir, Upload: opts.Upload, MaxUses: opts.MaxUses, MaxBytes: opts.MaxBytes,
+		CreatedBy: u.ID, Creator: u.Username, ExpiresAt: time.Now().Add(opts.TTL)}
 	if password := opts.Password; password != "" {
 		switch {
 		case utf8.RuneCountInString(password) < MinSharePasswordLength:
@@ -88,6 +94,18 @@ func (s *Service) UseShare(ctx context.Context, sh *Share) (bool, error) {
 // through it that was not stored after all.
 func (s *Service) UnuseShare(ctx context.Context, id int64) error {
 	return s.store.UnuseShare(ctx, id)
+}
+
+// AddShareBytes counts n more bytes sent through the upload link id. It
+// reports false if that would go past what the link takes, or it ended.
+func (s *Service) AddShareBytes(ctx context.Context, id, n int64) (bool, error) {
+	return s.store.AddShareBytes(ctx, id, n)
+}
+
+// SubShareBytes takes back n bytes counted for the link id, for a file
+// that was not stored after all.
+func (s *Service) SubShareBytes(ctx context.Context, id, n int64) error {
+	return s.store.SubShareBytes(ctx, id, n)
 }
 
 // TouchShare notes that sh was opened now.

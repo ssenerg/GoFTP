@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"errors"
 	"io"
@@ -108,6 +109,9 @@ func (s *Server) put(c fiber.Ctx) error {
 
 	if !s.roomFor(dir, length) {
 		return s.uploadError(nil, errLowSpace)
+	}
+	if err := s.homeRoom(s.homeAt(dir), length-sizeOf(dir, name)); err != nil {
+		return s.uploadError(nil, err)
 	}
 	body := s.requestBody(c)
 	rights := uploadRights{create: create, replace: replace}
@@ -259,6 +263,32 @@ func (s *Server) linkUpload(c fiber.Ctx, tus bool) error {
 	defer dir.Close()
 	allow := s.linkUploadRules(sh)
 	body := s.requestBody(c)
+	// A link that takes a limited size takes as much as the whole request
+	// at first, and gives back what was not stored.
+	var reserved, sent int64
+	if sh.MaxBytes > 0 {
+		if body.length < 0 {
+			return fiber.ErrLengthRequired
+		}
+		if err := s.addLinkBytes(c, sh, body.length); err != nil {
+			return err
+		}
+		reserved = body.length
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+		defer cancel()
+		var err error
+		switch {
+		case reserved > sent:
+			err = s.auth.SubShareBytes(ctx, sh.ID, reserved-sent)
+		case reserved == 0 && sent > 0:
+			_, err = s.auth.AddShareBytes(ctx, sh.ID, sent)
+		}
+		if err != nil {
+			s.log.Warn("count link bytes", zap.Int64("share", sh.ID), zap.Error(err))
+		}
+	}()
 	form := multipart.NewReader(body, params["boundary"])
 	var stored []string
 	for {
@@ -287,9 +317,10 @@ func (s *Server) linkUpload(c fiber.Ctx, tus bool) error {
 		}
 		got, _, size, err := s.store(dir, name, part, false, uploadRights{create: true, rename: true}, s.copyUpload)
 		if err != nil {
-			s.unuseLink(sh.ID)
+			s.unuseLink(sh.ID, 0)
 			return s.formError(c, stored, s.uploadError(body, err))
 		}
+		sent += size
 		s.logUpload(c, path.Join(sh.Path, got), size, true)
 		stored = append(stored, name)
 		_ = part.Close()
@@ -385,11 +416,20 @@ func (s *Server) store(dir *os.Root, name string, body io.Reader, replace bool, 
 	} else if !rights.create {
 		return "", false, 0, fiber.ErrForbidden
 	}
+	credit := int64(0)
+	if !created {
+		credit = sizeOf(dir, name)
+	}
+	w, err := s.writeGuard(dir, nil, credit)
+	if err != nil {
+		return "", false, 0, err
+	}
 	f, err := dir.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return "", false, 0, err
 	}
-	size, err = copy(s.spaceGuard(dir, f), body)
+	setWriter(w, f)
+	size, err = copy(w, body)
 	if err == nil {
 		err = f.Sync()
 	}
@@ -403,6 +443,11 @@ func (s *Server) store(dir *os.Root, name string, body io.Reader, replace bool, 
 		stored, err = s.placeFree(dir, tmp, name)
 	default:
 		err = place(dir, tmp, name, replace, rights)
+	}
+	if err != nil || !created {
+		// What it counted for the home's quota is gone, or it replaced
+		// a file.
+		s.recount(s.homeAt(dir))
 	}
 	if err != nil {
 		return "", false, size, err
@@ -525,6 +570,15 @@ func (s *Server) copyUpload(dst io.Writer, body io.Reader) (int64, error) {
 	return n, err
 }
 
+// sizeOf returns the size of the file name of dir, 0 if there is none: what
+// replacing it frees.
+func sizeOf(dir *os.Root, name string) int64 {
+	if info, err := dir.Lstat(name); err == nil && info.Mode().IsRegular() {
+		return info.Size()
+	}
+	return 0
+}
+
 // syncDir makes a rename durable; not every platform can sync directories.
 func syncDir(dir *os.Root) {
 	if d, err := dir.Open("."); err == nil {
@@ -587,6 +641,8 @@ func (s *Server) uploadError(body *requestBody, err error) error {
 		return fiber.ErrRequestTimeout
 	case berr != nil:
 		return fiber.ErrBadRequest
+	case errors.Is(err, errQuota):
+		return explain(fiber.ErrInsufficientStorage, "There is no room for it in this home: delete something, and empty the trash, to make room.")
 	case errors.Is(err, syscall.ENOSPC):
 		return fiber.ErrInsufficientStorage
 	case errors.Is(err, syscall.ENAMETOOLONG):

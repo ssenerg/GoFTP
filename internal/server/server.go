@@ -54,6 +54,8 @@ type Server struct {
 	// claimHome); homeMu orders the claims.
 	homesChecked sync.Map
 	homeMu       sync.Mutex
+	// uses holds what homes hold, by name (see homeUse).
+	uses sync.Map
 	// fold is how rules compare paths (see checkNames), nil as spelled.
 	fold func(string) string
 	// proxyNoted is set once untrusted proxy headers have been logged.

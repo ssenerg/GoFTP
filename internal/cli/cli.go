@@ -206,13 +206,20 @@ func userCmd() *cobra.Command {
 					return err
 				}
 				w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-				fmt.Fprintln(w, "USERNAME\tROLE\tPASSWORD\tCREATED")
+				fmt.Fprintln(w, "USERNAME\tROLE\tPASSWORD\tHOME QUOTA\tCREATED")
 				for _, u := range users {
 					state := "set"
 					if u.MustChangePassword {
 						state = "temporary"
 					}
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", u.Username, orNone(u.Role), state, u.CreatedAt.Format(time.DateTime))
+					quota := "default"
+					if q := u.HomeQuota; q != nil {
+						quota = "none"
+						if *q > 0 {
+							quota = config.ByteSize(*q).String()
+						}
+					}
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", u.Username, orNone(u.Role), state, quota, u.CreatedAt.Format(time.DateTime))
 				}
 				return w.Flush()
 			})
@@ -250,6 +257,33 @@ func userCmd() *cobra.Command {
 		},
 	}
 
+	quota := &cobra.Command{
+		Use:   "quota NAME SIZE",
+		Short: "Set how much a user's home may hold: a size such as 10GiB, none for no limit, or default for homes.quota",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			q, err := config.ParseQuota(args[1])
+			if err != nil {
+				return err
+			}
+			return withService(cmd, func(svc *auth.Service) error {
+				if err := svc.SetHomeQuota(cmd.Context(), args[0], q); err != nil {
+					return err
+				}
+				name := auth.NormalizeUsername(args[0])
+				switch {
+				case q == nil:
+					cmd.Printf("the home of %s may hold as much as homes.quota says\n", name)
+				case *q == 0:
+					cmd.Printf("the home of %s may hold any amount\n", name)
+				default:
+					cmd.Printf("the home of %s may hold %s\n", name, config.ByteSize(*q))
+				}
+				return nil
+			})
+		},
+	}
+
 	del := &cobra.Command{
 		Use:   "delete NAME",
 		Short: "Delete a user, their policies and sessions; their home goes to the trash (with the trash off, it is deleted)",
@@ -276,7 +310,7 @@ func userCmd() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(add, list, passwd, role, del)
+	cmd.AddCommand(add, list, passwd, role, quota, del)
 	return cmd
 }
 

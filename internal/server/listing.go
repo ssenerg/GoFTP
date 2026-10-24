@@ -108,6 +108,33 @@ func (s *Server) render(c fiber.Ctx, status int, name string, data any) error {
 	return c.Status(status).Send(buf.Bytes())
 }
 
+// usage is what a home holds, against its quota.
+type usage struct {
+	Used    string // e.g. "1.2 GiB"
+	Quota   string // "" without one
+	Trash   string // of Used, in the trash; "" if nothing
+	Percent int    // of the quota used
+	Full    bool   // 90% or more
+}
+
+// usageOf describes what the home name holds.
+func (s *Server) usageOf(name string) (*usage, error) {
+	used, trashed, quota, err := s.homeUsage(name)
+	if err != nil {
+		return nil, err
+	}
+	u := &usage{Used: formatSize(used)}
+	if trashed > 0 {
+		u.Trash = formatSize(trashed)
+	}
+	if quota > 0 {
+		u.Quota = formatSize(quota)
+		u.Percent = int(min(100, used*100/quota))
+		u.Full = u.Percent >= 90
+	}
+	return u, nil
+}
+
 type listing struct {
 	page
 	Path     string
@@ -138,6 +165,7 @@ type listing struct {
 	DeleteAny bool      // some entry may be deleted
 	Manage    bool      // some entry may be renamed, moved, copied, deleted or shared
 	Selected  *listItem // its forms are shown
+	Usage     *usage    // what the visitor's home holds, in it
 	// ShareHere is set when the visitor may share this folder.
 	ShareHere bool
 }
@@ -292,6 +320,9 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 	rel := inHome(home, urlPath)
 	if rel != "" {
 		data.Home, data.Crumbs = escapePath(home+"/"), crumbs(home, rel)
+		if data.Usage, err = s.usageOf(userOf(c).Username); err != nil {
+			return err
+		}
 	}
 	create, replace, err := s.uploadRightsAt(c, object(urlPath, true), object(realPath, true))
 	if err != nil {

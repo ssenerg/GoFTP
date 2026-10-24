@@ -21,6 +21,15 @@ func openFileLimit() (uint64, bool) {
 	return uint64(lim.Cur), true
 }
 
+// fileID identifies the file of info, for files with more than one name.
+func fileID(info fs.FileInfo) ([2]uint64, bool) {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || st.Nlink < 2 {
+		return [2]uint64{}, false
+	}
+	return [2]uint64{uint64(st.Dev), uint64(st.Ino)}, true
+}
+
 // sameDevice reports whether two entries live on the same file system.
 func sameDevice(a, b fs.FileInfo) bool {
 	sa, okA := a.Sys().(*syscall.Stat_t)

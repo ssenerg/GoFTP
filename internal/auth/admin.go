@@ -83,6 +83,19 @@ func (s *Service) ResetPassword(ctx context.Context, username string) (string, e
 	return password, nil
 }
 
+// SetHomeQuota sets how much the home of username may hold, in bytes: nil
+// for the server's default, 0 for no limit.
+func (s *Service) SetHomeQuota(ctx context.Context, username string, quota *int64) error {
+	if quota != nil && *quota < 0 {
+		return fmt.Errorf("%w: a quota cannot be negative", ErrInvalid)
+	}
+	u, err := s.user(ctx, username)
+	if err != nil {
+		return err
+	}
+	return s.store.SetHomeQuota(ctx, u.ID, quota)
+}
+
 // SetRole replaces the user's roles with role. The new role is added
 // first, so that running servers never see the user without one.
 func (s *Service) SetRole(ctx context.Context, username, role string) error {

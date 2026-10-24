@@ -178,9 +178,13 @@
     const submit = $("button[type=submit]", form);
     // What a use is depends on what the link lets people do.
     const noun = $(".share-noun", form);
+    const size = $(".share-size", form);
     const kind = form.elements.kind;
     kind.addEventListener("change", () => {
       noun.textContent = kind.value === "upload" ? "Files" : "Downloads";
+      // Only what is sent through a link has a size to limit.
+      size.hidden = kind.value !== "upload";
+      if (size.hidden) form.elements.max_size.value = "";
     });
     form.addEventListener("submit", async e => {
       e.preventDefault();
@@ -206,7 +210,8 @@
         return;
       }
       const password = form.elements.password.value !== "";
-      const limit = link.max_uses ? `, for ${link.max_uses} ${link.upload ? "files" : "downloads"} at most` : "";
+      let limit = link.max_uses ? `, for ${link.max_uses} ${link.upload ? "files" : "downloads"} at most` : "";
+      if (link.max_size) limit += `, up to ${link.max_size} in all`;
       const title = document.createElement("p");
       title.className = "form-title";
       title.append(icon("check"), "Link created");

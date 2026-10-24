@@ -276,3 +276,70 @@ func TestMayShare(t *testing.T) {
 		t.Error("what everyone may do does not count")
 	}
 }
+
+func TestShareBytes(t *testing.T) {
+	services(t, func(t *testing.T, svc *auth.Service) {
+		ctx := context.Background()
+		if _, err := svc.CreateUser(ctx, "ann", "admin"); err != nil {
+			t.Fatal(err)
+		}
+		ann := userNamed(t, svc, "ann")
+		if _, _, err := svc.CreateShare(ctx, ann, "/inbox", true, auth.ShareOptions{TTL: time.Hour, MaxBytes: 10}); !errors.Is(err, auth.ErrInvalid) {
+			t.Errorf("a size for a read link: %v", err)
+		}
+		token, sh, err := svc.CreateShare(ctx, ann, "/inbox", true, auth.ShareOptions{TTL: time.Hour, Upload: true, MaxBytes: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, c := range []struct {
+			n    int64
+			want bool
+		}{{6, true}, {5, false}, {4, true}, {1, false}} {
+			if ok, err := svc.AddShareBytes(ctx, sh.ID, c.n); ok != c.want || err != nil {
+				t.Errorf("add %d: %v, %v", i, ok, err)
+			}
+		}
+		if err := svc.SubShareBytes(ctx, sh.ID, 7); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := svc.ShareByToken(ctx, token); err != nil || got.MaxBytes != 10 || got.Bytes != 3 {
+			t.Errorf("ShareByToken: %+v %v", got, err)
+		}
+		if err := svc.SubShareBytes(ctx, sh.ID, 100); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := svc.ShareByToken(ctx, token); got.Bytes != 0 {
+			t.Errorf("bytes went below 0: %d", got.Bytes)
+		}
+	})
+}
+
+func TestHomeQuota(t *testing.T) {
+	services(t, func(t *testing.T, svc *auth.Service) {
+		ctx := context.Background()
+		if _, err := svc.CreateUser(ctx, "ann", "user"); err != nil {
+			t.Fatal(err)
+		}
+		if userNamed(t, svc, "ann").HomeQuota != nil {
+			t.Error("a new user has a quota of their own")
+		}
+		for _, q := range []int64{10 << 30, 0} {
+			if err := svc.SetHomeQuota(ctx, "Ann", &q); err != nil {
+				t.Fatal(err)
+			}
+			if got := userNamed(t, svc, "ann").HomeQuota; got == nil || *got != q {
+				t.Errorf("quota %v, want %d", got, q)
+			}
+		}
+		if err := svc.SetHomeQuota(ctx, "ann", nil); err != nil || userNamed(t, svc, "ann").HomeQuota != nil {
+			t.Errorf("back to the default: %v", err)
+		}
+		bad := int64(-1)
+		if err := svc.SetHomeQuota(ctx, "ann", &bad); !errors.Is(err, auth.ErrInvalid) {
+			t.Errorf("negative: %v", err)
+		}
+		if err := svc.SetHomeQuota(ctx, "nobody", nil); !errors.Is(err, auth.ErrNotFound) {
+			t.Errorf("nobody: %v", err)
+		}
+	})
+}

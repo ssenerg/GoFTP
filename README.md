@@ -73,6 +73,7 @@ goftp user add bob --role operator   # prints a temporary password
 goftp user list
 goftp user passwd bob                # new temporary password, ends bob's sessions
 goftp user role bob admin
+goftp user quota bob 10GiB           # how much his home may hold; none, or default
 goftp user delete bob                # their home goes to the trash
 ```
 
@@ -147,6 +148,15 @@ homes that are still there are ordinary folders, open to whoever the rules
 let in (by default, every user may read `/home/`): goftp warns of that at
 startup. The folder of homes may not be a symlink, and should be on the
 same disk as the rest.
+
+A home may hold up to a quota: `homes.quota` (`GOFTP_HOMES_QUOTA`, e.g.
+`10GiB`; `0`, the default, for no limit), or what a superadmin set for
+its user, under **Users** or with `goftp user quota NAME 10GiB` (`none` for
+no limit, `default` for `homes.quota`). What its user deleted from it
+counts too while it is in the trash, so deleting makes room once the trash
+is emptied. Uploads, copies and moves that would go past it, also through
+upload links into the home, get `507 Insufficient Storage`. **My files**
+shows how much the home holds, with a bar when it has a quota.
 
 Deleting a user moves their home to the trash, and removes the rules for
 paths in it. Superadmins see it there, but not what is in it: they may
@@ -357,7 +367,10 @@ there and share the folder. A link can also stop after a number of
 downloads (anything that sends a file's first byte, or a zip; showing it
 in the browser, its page or its thumbnail does not count, nor resuming a
 download further on), or for upload links of files sent (one that fails
-or is cancelled gives its use back).
+or is cancelled gives its use back). Upload links can also take a limited
+size in all (`max_size`, e.g. `2GiB`); a resumable upload counts its whole
+length when it starts, so one that does not fit is refused before it is
+sent. **Shared** shows how much was sent through each.
 
 A link never gives more than its creator may still read and share: it
 stops working when they lose those rights, or when what it leads to is
@@ -369,7 +382,7 @@ new temporary password, ends their links too. Scripts:
 ```sh
 curl -H "Authorization: Bearer $TOKEN" -d action=create -d path=/docs/report.pdf -d expires=7d https://host/.shares/
 # {"id":1,"url":"https://host/.share/...","expires_at":"...","upload":false,"max_uses":0}
-curl -H "Authorization: Bearer $TOKEN" -d action=create -d path=/inbox -d expires=30d -d kind=upload -d max_uses=20 https://host/.shares/
+curl -H "Authorization: Bearer $TOKEN" -d action=create -d path=/inbox -d expires=30d -d kind=upload -d max_uses=20 -d max_size=2GiB https://host/.shares/
 curl -H "Authorization: Bearer $TOKEN" -d action=revoke -d id=1 https://host/.shares/
 ```
 
@@ -415,7 +428,8 @@ the admin rule is still the default one. To let others share, e.g. `goftp policy
   the rules, and whoever runs the server can read its files.
 - Upload links let whoever has them fill a folder, with files of up to
   `upload.max_size` each, until the disk is down to `upload.min_free`:
-  give them a short life, a password, or a limit of files.
+  give them a short life, a password, a limit of files or of size. Into a
+  home, they stop at its quota.
 - Rules compare paths as spelled. On a file system that finds names in
   other spellings too (ignoring case or Unicode normalization), goftp
   compares them as that file system does where the kernel tells how names

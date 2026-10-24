@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"errors"
 	"slices"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"go.uber.org/zap"
 
 	"goftp/internal/auth"
+	"goftp/internal/config"
 )
 
 const (
@@ -30,6 +32,7 @@ type adminPage struct {
 	Error    string
 	Secret   *secret // a temporary password, shown once
 	Homes    string  // the folder of homes, whose rules are built in
+	Quota    string  // how much a home may hold by default, e.g. "10GiB"; "" for no limit
 	NoTrash  bool    // deleting is for good
 }
 
@@ -37,6 +40,7 @@ type adminUser struct {
 	Name, Role       string
 	MustChange, Self bool
 	Added, AddedISO  string
+	Quota            string // how much their home may hold, as set: "" for the default, "none" for no limit
 }
 
 type adminRule struct {
@@ -59,6 +63,7 @@ type secret struct {
 // can be shown, so links cannot make the page say something else.
 var adminNotices = map[string]string{
 	"role":         "The role was changed.",
+	"quota":        "The home quota was set.",
 	"deleted":      "The user was deleted.",
 	"deleted-home": "The user was deleted. Their home went to the trash, where a superadmin can restore it for them.",
 	"deleted-all":  "The user was deleted, and their home with everything in it, as the trash is off.",
@@ -114,7 +119,7 @@ func (s *Server) usersAction(c fiber.Ctx) error {
 	me := userOf(c).Username
 	name, role := auth.NormalizeUsername(form["user"]), form["role"]
 	fail := func(status int, msg string) error { return s.renderAdmin(c, status, "users", "", msg, nil) }
-	if action := form["action"]; action != "add" && name == me {
+	if action := form["action"]; action != "add" && action != "quota" && name == me {
 		return fail(fiber.StatusBadRequest, "You cannot change your own account here. To choose a new password, use Change password in your menu.")
 	}
 	ctx, cancel := dbContext(c)
@@ -135,6 +140,17 @@ func (s *Server) usersAction(c fiber.Ctx) error {
 		}
 		s.logAdmin(c, "password reset", zap.String("target", name))
 		return s.renderAdmin(c, fiber.StatusOK, "users", "", "", &secret{User: name, Password: password})
+	case "quota":
+		quota, err := config.ParseQuota(form["quota"])
+		if err != nil {
+			return fail(fiber.StatusBadRequest, "Give a home quota as a size such as 10 GiB, none for no limit, or nothing for the default.")
+		}
+		if err := s.auth.SetHomeQuota(ctx, name, quota); err != nil {
+			return s.adminFailure(c, "users", err)
+		}
+		s.recount(name)
+		s.logAdmin(c, "home quota set", zap.String("target", name), zap.String("quota", form["quota"]))
+		return s.redirect(c, usersPath+"?done=quota")
 	case "role":
 		if err := s.auth.SetRole(ctx, name, role); err != nil {
 			return s.adminFailure(c, "users", err)
@@ -237,7 +253,7 @@ func (s *Server) logAdmin(c fiber.Ctx, msg string, fields ...zap.Field) {
 func (s *Server) renderAdmin(c fiber.Ctx, status int, tab, notice, failure string, shown *secret) error {
 	data := adminPage{
 		page: s.page(c, "Administration"), Tab: tab, Roles: auth.Roles, Homes: s.cfg.Homes.Path,
-		NoTrash: s.cfg.Trash.Keep == 0,
+		NoTrash: s.cfg.Trash.Keep == 0, Quota: quotaText(int64(s.cfg.Homes.Quota)),
 		Actions: append(slices.Clone(auth.Actions), "*"),
 		Notice:  notice, Error: failure, Secret: shown,
 	}
@@ -253,6 +269,9 @@ func (s *Server) renderAdmin(c fiber.Ctx, status int, tab, notice, failure strin
 			Name: u.Username, Role: u.Role, MustChange: u.MustChangePassword, Self: u.Username == me,
 			Added: u.CreatedAt.UTC().Format("Jan 2, 2006"), AddedISO: u.CreatedAt.UTC().Format(time.RFC3339),
 		})
+		if q := u.HomeQuota; q != nil {
+			data.Users[len(data.Users)-1].Quota = cmp.Or(quotaText(*q), "none")
+		}
 	}
 	slices.SortFunc(data.Users, func(a, b adminUser) int { return strings.Compare(a.Name, b.Name) })
 
@@ -289,4 +308,12 @@ func who(sub string) string {
 		return "everyone"
 	}
 	return sub + " (role)"
+}
+
+// quotaText writes the quota n, e.g. "10GiB"; "" for 0, no limit.
+func quotaText(n int64) string {
+	if n == 0 {
+		return ""
+	}
+	return config.ByteSize(n).String()
 }

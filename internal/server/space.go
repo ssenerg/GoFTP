@@ -2,7 +2,6 @@ package server
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"syscall"
 )
@@ -26,29 +25,30 @@ func (s *Server) roomFor(dir *os.Root, n int64) bool {
 	return !ok || free-n >= min
 }
 
-// spaceGuard wraps w, which writes into the folder dir, to fail with
-// errLowSpace once the disk is down to upload.min_free.
-func (s *Server) spaceGuard(dir *os.Root, w io.Writer) io.Writer {
+// spaceGuard returns what checks, for writes into the folder dir, that the
+// disk is not down to upload.min_free; nil if nothing does.
+func (s *Server) spaceGuard(dir *os.Root) *spaceWriter {
 	if s.cfg.Upload.MinFree <= 0 {
-		return w
+		return nil
 	}
-	return &spaceWriter{s: s, dir: dir, w: w, unchecked: spaceCheckEvery}
+	return &spaceWriter{s: s, dir: dir, unchecked: spaceCheckEvery}
 }
 
 type spaceWriter struct {
 	s         *Server
 	dir       *os.Root
-	w         io.Writer
 	unchecked int64 // written since the last look
 }
 
-func (g *spaceWriter) Write(p []byte) (int, error) {
+// check fails with errLowSpace if writing n more bytes would take the disk
+// below upload.min_free. It looks every spaceCheckEvery bytes.
+func (g *spaceWriter) check(n int) error {
 	if g.unchecked >= spaceCheckEvery {
-		if !g.s.roomFor(g.dir, int64(len(p))) {
-			return 0, errLowSpace
+		if !g.s.roomFor(g.dir, int64(n)) {
+			return errLowSpace
 		}
 		g.unchecked = 0
 	}
-	g.unchecked += int64(len(p))
-	return g.w.Write(p)
+	g.unchecked += int64(n)
+	return nil
 }
