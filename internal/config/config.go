@@ -67,6 +67,9 @@ type LimiterConfig struct {
 
 type UploadConfig struct {
 	MaxSize ByteSize `mapstructure:"max_size"`
+	// MinFree is the free space uploads leave on the disk, for the
+	// database and everything else there; 0 turns the check off.
+	MinFree ByteSize `mapstructure:"min_free"`
 	// ResumeWindow is how long an interrupted resumable upload keeps the
 	// data it received, counted from the last that arrived.
 	ResumeWindow time.Duration `mapstructure:"resume_window"`
@@ -202,6 +205,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("limiter.max_failures", 20)
 	v.SetDefault("limiter.window", time.Minute)
 	v.SetDefault("upload.max_size", 0)
+	v.SetDefault("upload.min_free", 1<<30)
 	v.SetDefault("upload.resume_window", 24*time.Hour)
 	v.SetDefault("trash.keep", 30*24*time.Hour)
 	v.SetDefault("homes.path", "/home")
@@ -271,6 +275,9 @@ func (c *Config) normalize() error {
 	}
 	if c.Upload.MaxSize < 0 {
 		errs = append(errs, errors.New("upload.max_size must not be negative"))
+	}
+	if c.Upload.MinFree < 0 {
+		errs = append(errs, errors.New("upload.min_free must not be negative"))
 	}
 	if c.Upload.ResumeWindow < time.Minute {
 		errs = append(errs, errors.New("upload.resume_window must be at least 1m"))

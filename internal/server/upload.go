@@ -106,6 +106,9 @@ func (s *Server) put(c fiber.Ctx) error {
 		return s.deny(c)
 	}
 
+	if !s.roomFor(dir, length) {
+		return s.uploadError(nil, errLowSpace)
+	}
 	body := s.requestBody(c)
 	rights := uploadRights{create: create, replace: replace}
 	created, size, err := s.receive(dir, name, body, c.Get(fiber.HeaderIfNoneMatch) != "*", rights)
@@ -227,7 +230,7 @@ func (s *Server) postForm(c fiber.Ctx) error {
 // linkUpload takes files sent through an upload link: a resumable upload
 // (tus), or the files of a form. They go into the link's folder; a name
 // taken there gets a number, as the sender cannot see what is there. Every
-// file counts as a use of the link.
+// file stored counts as a use of the link.
 func (s *Server) linkUpload(c fiber.Ctx, tus bool) error {
 	sh, view, rel, _, err := s.share(c)
 	if err != nil || sh == nil {
@@ -284,6 +287,7 @@ func (s *Server) linkUpload(c fiber.Ctx, tus bool) error {
 		}
 		got, _, size, err := s.store(dir, name, part, false, uploadRights{create: true, rename: true}, s.copyUpload)
 		if err != nil {
+			s.unuseLink(sh.ID)
 			return s.formError(c, stored, s.uploadError(body, err))
 		}
 		s.logUpload(c, path.Join(sh.Path, got), size, true)
@@ -354,14 +358,19 @@ func (s *Server) receive(dir *os.Root, name string, body io.Reader, replace bool
 }
 
 // store is receive with copy moving the data, which for uploads is limited
-// in size (copyUpload). It also returns the name the file got, which with
-// rights.rename may differ.
+// in size (copyUpload); it stops short of the disk's last upload.min_free
+// bytes. It also returns the name the file got, which with rights.rename
+// may differ. With rename, nothing is locked until the data is complete,
+// so that a stranger's upload keeps no name busy: placeFree then takes the
+// first free one.
 func (s *Server) store(dir *os.Root, name string, body io.Reader, replace bool, rights uploadRights,
 	copy func(io.Writer, io.Reader) (int64, error)) (stored string, created bool, size int64, err error) {
 	tmp := tempPrefix + rand.Text() + tempSuffix
-	release, err := s.acquireLock(dir, name, tmp)
-	if err != nil {
-		return "", false, 0, err
+	release := func() {}
+	if !rights.rename {
+		if release, err = s.acquireLock(dir, name, tmp); err != nil {
+			return "", false, 0, err
+		}
 	}
 	defer func() {
 		_ = dir.Remove(tmp)
@@ -380,7 +389,7 @@ func (s *Server) store(dir *os.Root, name string, body io.Reader, replace bool, 
 	if err != nil {
 		return "", false, 0, err
 	}
-	size, err = copy(f, body)
+	size, err = copy(s.spaceGuard(dir, f), body)
 	if err == nil {
 		err = f.Sync()
 	}
@@ -401,25 +410,25 @@ func (s *Server) store(dir *os.Root, name string, body io.Reader, replace bool, 
 	return stored, created, size, nil
 }
 
-// placeFree moves the complete temp file tmp in dir to name, which the
-// caller has locked, or if that is taken to the first free name like it:
-// "a (2).txt", "a (3).txt" and so on.
+// placeFree moves the complete temp file tmp in dir to name, or if that is
+// taken or busy to the first free name like it: "a (2).txt", "a (3).txt"
+// and so on, and after a hundred of those to names with random numbers.
 func (s *Server) placeFree(dir *os.Root, tmp, name string) (string, error) {
-	for i := 1; i <= 100; i++ {
-		candidate := numbered(name, i)
+	for i := 1; i <= 105; i++ {
+		candidate := numbered(name, strconv.Itoa(i))
+		if i > 100 {
+			candidate = numbered(name, strings.ToLower(rand.Text()[:8]))
+		}
 		if !validName(candidate) {
 			break
 		}
-		release := func() {}
-		if i > 1 {
-			var err error
-			if release, err = s.acquireLock(dir, candidate, tempPrefix+rand.Text()+tempSuffix); errors.Is(err, fiber.ErrConflict) {
-				continue
-			} else if err != nil {
-				return "", err
-			}
+		release, err := s.acquireLock(dir, candidate, tempPrefix+rand.Text()+tempSuffix)
+		if errors.Is(err, fiber.ErrConflict) {
+			continue
+		} else if err != nil {
+			return "", err
 		}
-		err := commit(dir, tmp, candidate, false)
+		err = commit(dir, tmp, candidate, false)
 		release()
 		if errors.Is(err, errExists) {
 			continue
@@ -433,17 +442,17 @@ func (s *Server) placeFree(dir *os.Root, tmp, name string) (string, error) {
 	return "", errExists
 }
 
-// numbered is the ith name like name: name itself, then "a (2).txt" for
-// "a.txt", and so on.
-func numbered(name string, i int) string {
-	if i == 1 {
+// numbered is the name like name with the number n: name itself for "1",
+// "a (2).txt" for "a.txt" and "2", and so on.
+func numbered(name, n string) string {
+	if n == "1" {
 		return name
 	}
 	ext := path.Ext(name)
 	if ext == name {
 		ext = ""
 	}
-	return strings.TrimSuffix(name, ext) + " (" + strconv.Itoa(i) + ")" + ext
+	return strings.TrimSuffix(name, ext) + " (" + n + ")" + ext
 }
 
 // checkTarget reports whether storing name in dir would create it, or why

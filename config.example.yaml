@@ -42,6 +42,7 @@ limiter:                 # per-client budget of failed password checks
 
 upload:
   max_size: 0            # per file, e.g. 10GiB; 0 = unlimited
+  min_free: 1GiB         # uploads stop short of this much free disk; 0 = no check
   resume_window: 24h     # how long an interrupted upload can be resumed
 
 homes:                   # a private folder for every user, as PATH/NAME

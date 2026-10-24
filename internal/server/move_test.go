@@ -1,12 +1,15 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gofiber/fiber/v3"
 
 	"goftp/internal/auth"
 )
@@ -234,5 +237,119 @@ func TestCopy(t *testing.T) {
 	}
 	if l := leftovers(f.dir); len(l) != 1 {
 		t.Errorf("leftover files: %v", l)
+	}
+}
+
+// A copy never copies itself, also when a symlink in what it copies leads
+// to where the copy goes.
+func TestCopyDoesNotCopyItself(t *testing.T) {
+	f := newFixture(t)
+	f.write(t, "src/a.txt", "a")
+	f.write(t, "shared/dest/x.txt", "x")
+	if err := os.Symlink("../shared", filepath.Join(f.dir, "src", "l")); err != nil {
+		t.Fatal(err)
+	}
+	resp, body := post(t, f.as("admin"), "/", "copy=src&into=/shared/dest")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("copy: %d %s", resp.StatusCode, body)
+	}
+	if readFile(t, f.dir, "shared/dest/src/l/dest/x.txt") != "x" || exists(filepath.Join(f.dir, "shared", "dest", "src", "l", "dest", "src")) {
+		t.Error("the copy holds itself")
+	}
+	if got := leftovers(f.dir); len(got) != 0 {
+		t.Errorf("left behind: %v", got)
+	}
+}
+
+// Copies are limited in how much they hold.
+func TestCopyLimits(t *testing.T) {
+	f := newFixture(t)
+	for _, name := range []string{"a", "b", "c", "d"} {
+		f.write(t, "src/"+name+".txt", name)
+	}
+	f.write(t, "dest/.keep", "")
+	defer func(n int) { maxCopyEntries = n }(maxCopyEntries)
+	maxCopyEntries = 3
+	resp, body := post(t, f.as("admin"), "/", "copy=src&into=/dest")
+	if resp.StatusCode != http.StatusConflict || !strings.Contains(body, "too much in it to copy at once") {
+		t.Errorf("copy: %d %s", resp.StatusCode, body)
+	}
+	if exists(filepath.Join(f.dir, "dest", "src")) {
+		t.Error("copied anyway")
+	}
+}
+
+// A copy that fails midway removes what it made, and only that.
+func TestCopyFailureLeavesNothing(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads everything")
+	}
+	f := newFixture(t)
+	f.write(t, "src/a.txt", "a")
+	f.write(t, "src/b.txt", "b")
+	f.write(t, "dest/mine.txt", "mine")
+	if err := os.Chmod(filepath.Join(f.dir, "src", "b.txt"), 0); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(filepath.Join(f.dir, "src", "b.txt"), 0o644)
+	if resp, _ := post(t, f.as("admin"), "/", "copy=src&into=/dest"); resp.StatusCode < 400 {
+		t.Fatalf("copy: %d", resp.StatusCode)
+	}
+	entries, _ := os.ReadDir(filepath.Join(f.dir, "dest"))
+	if len(entries) != 1 || readFile(t, f.dir, "dest/mine.txt") != "mine" {
+		t.Errorf("left in dest: %v", entries)
+	}
+}
+
+// Moving and renaming a folder need the right to create everything in it
+// where it goes, as copying does.
+func TestMoveChecksWhereItGoes(t *testing.T) {
+	ta := newTestAuth(t)
+	f := newFixtureWith(t, ta)
+	f.write(t, "mine/2024/final/report.txt", "r")
+	f.write(t, "incoming/x/final/report.txt", "r")
+	if _, err := ta.svc.AddPolicy("admin", "!/incoming/2024/final/*", auth.ActWrite); err != nil {
+		t.Fatal(err)
+	}
+	admin := f.as("admin")
+	for dir, form := range map[string]string{"/mine/": "move=2024&into=/incoming", "/incoming/": "rename=x&to=2024"} {
+		if resp, body := post(t, admin, dir, form); resp.StatusCode != http.StatusForbidden {
+			t.Errorf("%s: %d %s", form, resp.StatusCode, body)
+		}
+	}
+	if exists(filepath.Join(f.dir, "incoming", "2024")) {
+		t.Error("moved anyway")
+	}
+}
+
+// Copies and zips skip what is no longer where its rights were checked,
+// such as after a symlink on the way was swapped.
+func TestCopyChecksWhereItReads(t *testing.T) {
+	f := newFixture(t)
+	f.write(t, "b/c.txt", "c")
+	f.write(t, "dest/.keep", "")
+	if err := os.Symlink("b", filepath.Join(f.dir, "a")); err != nil {
+		t.Fatal(err)
+	}
+	allow := f.srv.rulesOf(nil)
+	if _, err := f.srv.readable("/a", "/a", allow); !errors.Is(err, errChanged) {
+		t.Errorf("a folder elsewhere: %v", err)
+	}
+	if _, err := f.srv.readable("/a", "/b", allow); err != nil {
+		t.Errorf("where it really is: %v", err)
+	}
+	dst, err := f.srv.root.OpenRoot("dest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close()
+	if err := f.srv.copyFile(dst, "c.txt", "/a/c.txt"); !errors.Is(err, fiber.ErrNotFound) {
+		t.Errorf("a file elsewhere: %v", err)
+	}
+	if err := f.srv.copyFile(dst, "c.txt", "/b/c.txt"); err != nil {
+		t.Errorf("where it really is: %v", err)
+	}
+	if err := renameExclBetween(dst, "c.txt", f.srv.root, "b"); !errors.Is(err, errExists) {
+		t.Errorf("renaming over a folder: %v", err)
 	}
 }

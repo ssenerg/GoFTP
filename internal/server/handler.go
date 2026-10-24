@@ -128,7 +128,15 @@ func rootName(urlPath string) string {
 // OS exposes it, which cannot race with symlink swaps.
 func (s *Server) resolve(name string, f *os.File) (string, bool) {
 	real, ok := "", false
-	if f != nil {
+	if f == nil && pathByOpening {
+		if f, err := s.root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0); err == nil {
+			real, ok = fdPath(f)
+			_ = f.Close()
+		}
+		if !ok {
+			return "", false
+		}
+	} else if f != nil {
 		real, ok = fdPath(f)
 	}
 	if !ok {

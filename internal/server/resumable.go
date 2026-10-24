@@ -13,6 +13,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -134,6 +135,9 @@ func (s *Server) createUpload(c fiber.Ctx, dirPath string, sh *auth.Share) error
 	} else if !create && !mayReplace {
 		return deny()
 	}
+	if !s.roomFor(dir, length) {
+		return s.uploadError(nil, errLowSpace)
+	}
 	rights := uploadRights{create: create, replace: mayReplace, rename: sh != nil}
 	if !rights.rename {
 		if s.locked(rootName(dirPath), name) {
@@ -151,7 +155,8 @@ func (s *Server) createUpload(c fiber.Ctx, dirPath string, sh *auth.Share) error
 		up.UserID = u.ID
 	}
 	if sh != nil {
-		// Each file sent counts as a use of the link.
+		// Each file sent counts as a use of the link, given back if
+		// the upload ends without it (see dropUpload).
 		if err := s.spendLink(c, sh); err != nil {
 			return err
 		}
@@ -159,6 +164,7 @@ func (s *Server) createUpload(c fiber.Ctx, dirPath string, sh *auth.Share) error
 	}
 	f, err := dir.OpenFile(up.Temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
+		s.unuseLink(up.ShareID)
 		return s.uploadError(nil, err)
 	}
 	_ = f.Close()
@@ -167,6 +173,7 @@ func (s *Server) createUpload(c fiber.Ctx, dirPath string, sh *auth.Share) error
 	token, err := s.auth.CreateUpload(ctx, up, s.cfg.Upload.ResumeWindow)
 	if err != nil {
 		_ = dir.Remove(up.Temp)
+		s.unuseLink(up.ShareID)
 		return err
 	}
 	s.log.Info("upload started", zap.String("ip", c.IP()), zap.String("user", visitor(c)), zap.String("path", urlPath),
@@ -308,7 +315,7 @@ func (s *Server) patchUpload(c fiber.Ctx) error {
 	stop := s.keepClaim(up, writer, body)
 	var written int64
 	if _, err = f.Seek(offset, io.SeekStart); err == nil {
-		written, err = io.Copy(f, body)
+		written, err = io.Copy(s.spaceGuard(dir, f), body)
 	}
 	stop()
 	// What arrived stays, also when the request was cut off.
@@ -319,6 +326,10 @@ func (s *Server) patchUpload(c fiber.Ctx) error {
 		err = cerr
 	}
 	if err != nil {
+		if up.ShareID != 0 && errors.Is(err, syscall.ENOSPC) {
+			// A stranger's upload holds no space for later.
+			s.dropUpload(up)
+		}
 		return s.uploadError(body, err)
 	}
 	s.finishBody(c, body)
@@ -367,17 +378,10 @@ func linkClosed() error {
 // completeUpload stores a complete upload under its name, as receive does
 // for other uploads, and forgets it. If the name is busy, the upload waits
 // for the next try (423), as it does after other failures that may pass,
-// such as a full disk. If it may not be stored at all, it is dropped.
+// such as a full disk. If it may not be stored at all, it is dropped. An
+// upload through a link takes the first free name (see placeFree).
 func (s *Server) completeUpload(c fiber.Ctx, dir *os.Root, up *auth.Upload, rights uploadRights) error {
-	release, err := s.acquireLock(dir, up.Name, tempPrefix+rand.Text()+tempSuffix)
-	if errors.Is(err, fiber.ErrConflict) {
-		c.Set(fiber.HeaderRetryAfter, "5")
-		return fiber.ErrLocked
-	}
-	if err != nil {
-		return err
-	}
-	defer release()
+	var err error
 	name, created := up.Name, true
 	switch {
 	case rights.rename && !rights.create:
@@ -385,10 +389,19 @@ func (s *Server) completeUpload(c fiber.Ctx, dir *os.Root, up *auth.Upload, righ
 	case rights.rename:
 		name, err = s.placeFree(dir, up.Temp, up.Name)
 	default:
+		release, lerr := s.acquireLock(dir, up.Name, tempPrefix+rand.Text()+tempSuffix)
+		if errors.Is(lerr, fiber.ErrConflict) {
+			c.Set(fiber.HeaderRetryAfter, "5")
+			return fiber.ErrLocked
+		}
+		if lerr != nil {
+			return lerr
+		}
 		created, err = checkTarget(dir, up.Name, up.Replace, rights)
 		if err == nil {
 			err = place(dir, up.Temp, up.Name, up.Replace, rights)
 		}
+		release()
 	}
 	if errors.Is(err, errExists) {
 		err = fiber.ErrConflict
@@ -478,13 +491,29 @@ func (s *Server) releaseUpload(up *auth.Upload, writer string) {
 	}
 }
 
-// dropUpload forgets an upload and removes what arrived.
+// dropUpload forgets an upload and removes what arrived. An upload through
+// a link gives its use of the link back.
 func (s *Server) dropUpload(up *auth.Upload) {
 	s.removePartial(up)
 	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
 	defer cancel()
 	if err := s.auth.DeleteUpload(ctx, up.ID); err != nil {
 		s.log.Warn("forget upload", zap.Int64("upload", up.ID), zap.Error(err))
+		return
+	}
+	s.unuseLink(up.ShareID)
+}
+
+// unuseLink gives back a use of the link id, if not 0, counted for a file
+// that was not stored after all.
+func (s *Server) unuseLink(id int64) {
+	if id == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+	if err := s.auth.UnuseShare(ctx, id); err != nil {
+		s.log.Warn("give back link use", zap.Int64("share", id), zap.Error(err))
 	}
 }
 
@@ -511,6 +540,7 @@ func (s *Server) purgeUploads(ctx context.Context) {
 			}
 			for i := range ups {
 				s.removePartial(&ups[i])
+				s.unuseLink(ups[i].ShareID)
 			}
 			if len(ups) > 0 {
 				s.log.Info("removed expired uploads", zap.Int("uploads", len(ups)))

@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -463,5 +464,47 @@ func TestValidName(t *testing.T) {
 		if got := validName(name); got != want {
 			t.Errorf("validName(%q) = %v, want %v", name, got, want)
 		}
+	}
+}
+
+// Uploads stop short of the disk's last upload.min_free bytes.
+func TestMinFree(t *testing.T) {
+	f := newFixture(t, func(cfg *config.Config) { cfg.Upload.MinFree = 1 << 62 })
+	f.write(t, "inbox/.keep", "")
+	if _, ok := freeSpace(f.srv.root); !ok {
+		t.Skip("the free space cannot be known here")
+	}
+	op := f.as("operator")
+	if resp, _ := op.send(t, "PUT", "/inbox/a.txt", strings.NewReader("a")); resp.StatusCode != http.StatusInsufficientStorage {
+		t.Errorf("PUT: %d", resp.StatusCode)
+	}
+	if resp, _ := tus(t, op, "POST", "/inbox/", "", "Upload-Length", "1", "Upload-Metadata", metadata("b.txt")); resp.StatusCode != http.StatusInsufficientStorage {
+		t.Errorf("resumable: %d", resp.StatusCode)
+	}
+	body, ctype := multipartForm(t, formPart{field: "file", filename: "c.txt", content: "c"})
+	if resp, _ := op.send(t, "POST", "/inbox/", body, "Content-Type", ctype); resp.StatusCode != http.StatusInsufficientStorage {
+		t.Errorf("form: %d", resp.StatusCode)
+	}
+	if got := leftovers(filepath.Join(f.dir, "inbox")); len(got) != 0 {
+		t.Errorf("left behind: %v", got)
+	}
+
+	// A resumable upload through a link that meets the floor midway is
+	// dropped, with its use of the link given back.
+	g := newFixture(t)
+	g.write(t, "inbox/.keep", "")
+	drop, _ := createLink(t, g.as("admin"), url.Values{"path": {"/inbox"}, "kind": {"upload"}, "max_uses": {"1"}})
+	anon := g.as("")
+	loc := startResumable(t, anon, drop+"/", "big.bin", 4)
+	g.srv.cfg.Upload.MinFree = 1 << 62
+	if resp := patchAt(t, anon, loc, 0, "data"); resp.StatusCode != http.StatusInsufficientStorage {
+		t.Errorf("patch: %d", resp.StatusCode)
+	}
+	if offsetOf(t, anon, loc) != -1 {
+		t.Error("the upload stayed")
+	}
+	g.srv.cfg.Upload.MinFree = 0
+	if resp, _ := tus(t, anon, "POST", drop+"/", "", "Upload-Length", "1", "Upload-Metadata", metadata("next.txt")); resp.StatusCode != http.StatusCreated {
+		t.Errorf("the use was not given back: %d", resp.StatusCode)
 	}
 }

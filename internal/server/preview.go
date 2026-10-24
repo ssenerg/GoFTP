@@ -106,6 +106,7 @@ type fileAt struct {
 	rel   string // the file's path under base
 	page  func(title string) page
 	allow allowFunc
+	use   func() error // counts a download through a share link, or refuses it
 }
 
 // serveFileAs serves the file f at urlPath, which really lives at realPath,
@@ -121,7 +122,7 @@ func (s *Server) serveFileAs(c fiber.Ctx, f *os.File, info fs.FileInfo, urlPath,
 	case q.Has("thumb"):
 		return s.serveThumb(c, f, info, realPath)
 	}
-	return s.serveFile(c, f, info, path.Base(urlPath))
+	return s.serveFile(c, f, info, path.Base(urlPath), at.use)
 }
 
 // serveInline sends f (taking ownership of it) to be shown in the browser,
@@ -136,7 +137,7 @@ func (s *Server) serveInline(c fiber.Ctx, f *os.File, info fs.FileInfo, name str
 	if kind == "pdf" {
 		policy = pdfPolicy
 	}
-	return s.sendContent(c, f, info, name, ctype, policy)
+	return s.sendContent(c, f, info, name, ctype, policy, nil)
 }
 
 type viewerPage struct {

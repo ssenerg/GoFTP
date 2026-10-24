@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"strings"
 	"testing"
 
 	"goftp/internal/auth"
@@ -200,6 +201,41 @@ func TestHomeRules(t *testing.T) {
 		})
 		if svc.HomeOf("alice") != "" || svc.MayWrite("alice") {
 			t.Error("homes are still on")
+		}
+	})
+}
+
+// With a fold, rules meet paths however they are spelled.
+func TestFoldedRules(t *testing.T) {
+	services(t, func(t *testing.T, svc *auth.Service) {
+		if _, err := svc.Enforcer().AddRoleForUser(auth.Subject("olga"), "operator"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.AddPolicy("operator", "!/Docs/Secret/*", auth.ActRead); err != nil {
+			t.Fatal(err)
+		}
+		svc.SetHomes("/home")
+		olga, alice := &auth.User{Username: "olga"}, &auth.User{Username: "alice"}
+		allowed := func(u *auth.User, obj string) bool {
+			t.Helper()
+			ok, err := svc.Allowed(u, obj, auth.ActRead)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return ok
+		}
+		if !allowed(olga, "/HOME/alice/x") || !allowed(olga, "/docs/secret/x") {
+			t.Fatal("without a fold, paths are compared as spelled")
+		}
+		svc.SetFold(strings.ToLower)
+		defer svc.SetFold(nil)
+		for _, obj := range []string{"/HOME/alice/x", "/Home/ALICE/", "/docs/secret/x", "/DOCS/SECRET/x"} {
+			if allowed(olga, obj) {
+				t.Errorf("olga reads %s", obj)
+			}
+		}
+		if !allowed(alice, "/HOME/Alice/x") || !allowed(olga, "/docs/other") {
+			t.Error("folded rules allow too little")
 		}
 	})
 }

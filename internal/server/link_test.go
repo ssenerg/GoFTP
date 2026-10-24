@@ -6,10 +6,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"goftp/internal/auth"
+	"goftp/internal/config"
 )
 
 // createLink makes a link as f's user with the fields of form, and returns
@@ -245,5 +247,115 @@ func TestLinkLimits(t *testing.T) {
 	expectStatus(t, resp, http.StatusCreated)
 	if !strings.Contains(body, "can upload files to <strong>inbox</strong> until") || !strings.Contains(body, ", 5 files at most:") {
 		t.Errorf("created page: %s", body)
+	}
+}
+
+// Whatever the Range header says, a download that sends the start of the
+// file counts, and only that does.
+func TestLinkCountsWhatIsSent(t *testing.T) {
+	f := newFixture(t)
+	f.write(t, "a.txt", "0123456789")
+	f.write(t, "docs/pic.png", "\x89PNG\r\n\x1a\n")
+	f.write(t, "docs/b.txt", "b")
+	admin := f.as("admin")
+	anon := f.as("")
+
+	for _, headers := range [][]string{
+		{"Range", "bytes=-100"},
+		{"Range", "bytes=00-"},
+		{"Range", "Bytes=0-"},
+		{"Range", "junk"},
+		{"Range", "bytes=1-,0-0"},
+		{"Range", "bytes=5-", "If-Range", `"nope"`},
+	} {
+		link, _ := createLink(t, admin, url.Values{"path": {"/a.txt"}, "max_uses": {"1"}})
+		if resp, _ := anon.do(t, "GET", link+"/a.txt", headers...); resp.StatusCode >= 300 {
+			t.Fatalf("%v: %d", headers, resp.StatusCode)
+		}
+		if resp, _ := anon.do(t, "GET", link+"/a.txt"); resp.StatusCode != http.StatusGone {
+			t.Errorf("%v did not count: %d", headers, resp.StatusCode)
+		}
+	}
+
+	// In a shared folder, a file's page and preview do not count; a zip
+	// always does.
+	folder, _ := createLink(t, admin, url.Values{"path": {"/docs"}, "max_uses": {"1"}})
+	for _, uri := range []string{"/pic.png?view", "/pic.png?inline", "/pic.png?thumb"} {
+		if resp, _ := anon.do(t, "GET", folder+uri); resp.StatusCode == http.StatusGone {
+			t.Errorf("%s: %d", uri, resp.StatusCode)
+		}
+	}
+	if resp, _ := anon.do(t, "GET", folder+"/?zip&inline"); resp.StatusCode != http.StatusOK {
+		t.Errorf("zip: %d", resp.StatusCode)
+	}
+	if resp, _ := anon.do(t, "GET", folder+"/b.txt"); resp.StatusCode != http.StatusGone {
+		t.Errorf("?zip&inline did not count: %d", resp.StatusCode)
+	}
+}
+
+// A file that is not stored gives its use of the link back.
+func TestLinkUploadsGiveUsesBack(t *testing.T) {
+	f := newFixture(t, func(cfg *config.Config) { cfg.Upload.MaxSize = 4 })
+	f.write(t, "inbox/.keep", "")
+	anon := f.as("")
+	drop, _ := createLink(t, f.as("admin"), url.Values{"path": {"/inbox"}, "kind": {"upload"}, "max_uses": {"1"}})
+
+	body, ctype := multipartForm(t, formPart{field: "file", filename: "big.txt", content: "too large"})
+	if resp, _ := anon.send(t, "POST", drop+"/", body, "Content-Type", ctype); resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("too large: %d", resp.StatusCode)
+	}
+	// A resumable upload that is cancelled gives it back too.
+	loc := startResumable(t, anon, drop+"/", "half.txt", 4)
+	expectStatus(t, patchAt(t, anon, loc, 0, "ha"), http.StatusNoContent)
+	if resp, _ := tus(t, anon, "DELETE", loc, ""); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("cancel: %d", resp.StatusCode)
+	}
+	body, ctype = multipartForm(t, formPart{field: "file", filename: "ok.txt", content: "ok"})
+	if resp, body := anon.send(t, "POST", drop+"/", body, "Content-Type", ctype); resp.StatusCode != http.StatusCreated {
+		t.Errorf("after failures: %d %s", resp.StatusCode, body)
+	}
+	if readFile(t, f.dir, "inbox/ok.txt") != "ok" {
+		t.Error("not stored")
+	}
+}
+
+// Files sent through a link take a free name, also when the name asked for
+// is busy.
+func TestLinkUploadNames(t *testing.T) {
+	f := newFixture(t)
+	f.write(t, "inbox/a.txt", "the owner's")
+	anon := f.as("")
+	drop, _ := createLink(t, f.as("admin"), url.Values{"path": {"/inbox"}, "kind": {"upload"}})
+
+	// An upload, move or deletion of a.txt is under way.
+	f.write(t, "inbox/"+lockName("a.txt"), lockMagic+tempPrefix+"X"+tempSuffix+"\n")
+	body, ctype := multipartForm(t, formPart{field: "file", filename: "a.txt", content: "a stranger's"})
+	if resp, body := anon.send(t, "POST", drop+"/", body, "Content-Type", ctype); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("busy name: %d %s", resp.StatusCode, body)
+	}
+	if readFile(t, f.dir, "inbox/a (2).txt") != "a stranger's" || readFile(t, f.dir, "inbox/a.txt") != "the owner's" {
+		t.Error("not stored under a free name")
+	}
+	if err := os.Remove(filepath.Join(f.dir, "inbox", lockName("a.txt"))); err != nil {
+		t.Fatal(err)
+	}
+
+	// After a hundred numbered names, a random number.
+	for i := 3; i <= 100; i++ {
+		f.write(t, "inbox/"+numbered("a.txt", strconv.Itoa(i)), "taken")
+	}
+	body, ctype = multipartForm(t, formPart{field: "file", filename: "a.txt", content: "the 102nd"})
+	if resp, _ := anon.send(t, "POST", drop+"/", body, "Content-Type", ctype); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("101 taken names: %d", resp.StatusCode)
+	}
+	entries, _ := os.ReadDir(filepath.Join(f.dir, "inbox"))
+	random := 0
+	for _, e := range entries {
+		if n, ok := strings.CutPrefix(e.Name(), "a ("); ok && len(n) == len("abcdefgh).txt") && readFile(t, f.dir, "inbox/"+e.Name()) == "the 102nd" {
+			random++
+		}
+	}
+	if len(entries) != 101 || random != 1 {
+		t.Errorf("%d entries, %d with a random number", len(entries), random)
 	}
 }

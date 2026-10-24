@@ -227,6 +227,17 @@ func (s *Store) UseShare(_ context.Context, id int64) (bool, error) {
 	return false, nil
 }
 
+func (s *Store) UnuseShare(_ context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sh := range s.shares {
+		if sh.ID == id && sh.Uses > 0 {
+			sh.Uses--
+		}
+	}
+	return nil
+}
+
 func (s *Store) TouchShare(_ context.Context, id int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

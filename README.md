@@ -142,15 +142,21 @@ These rules are built in; rules for those paths come first, so a
 superadmin can still open homes up, e.g. `goftp policy add admin '/home/*' read`
 to let admins read them, or `goftp policy add user:bob '!/home/bob/*' write`
 to keep bob from adding files to his. `homes.path` (`GOFTP_HOMES_PATH`)
-moves them to another folder, or with `off` turns them off. The folder of
-homes may not be a symlink, and should be on the same disk as the rest.
+moves them to another folder, or with `off` turns them off. Turned off,
+homes that are still there are ordinary folders, open to whoever the rules
+let in (by default, every user may read `/home/`): goftp warns of that at
+startup. The folder of homes may not be a symlink, and should be on the
+same disk as the rest.
 
-Deleting a user moves their home to the trash. Superadmins see it there,
-but not what is in it: they may delete it for good, or restore it once a
-user of that name exists again, for whom it then is (an empty home of
-theirs gives way). A hidden `.goftp-owner` file in each home notes whose it
-is, so a home that a deleted user left behind (say, the trash was off)
-goes to the trash before a new user of the same name gets in.
+Deleting a user moves their home to the trash, and removes the rules for
+paths in it. Superadmins see it there, but not what is in it: they may
+delete it for good, or restore it once a user of that name exists again,
+for whom it then is (an empty home of theirs gives way), along with what
+they had deleted from it. Until then, what they deleted is nobody's: a new
+user of the same name does not see it. With the trash off, their home is
+deleted for good. A hidden `.goftp-owner` file in each home notes whose it
+is, so a home that a deleted user left behind goes to the trash before a
+new user of the same name gets in.
 
 ## Running without Docker
 
@@ -200,6 +206,9 @@ token. `POST /.auth/logout` ends the session. Sessions last
   needs a Content-Length.
 
 The target directory must exist, and `upload.max_size` caps each file.
+Uploads stop short of the disk's last `upload.min_free` bytes (1 GiB by
+default; `0` turns the check off), which stay for the database and
+everything else on that disk: the upload gets `507 Insufficient Storage`.
 Users who may upload new files into a folder (`write`) can also create
 folders in it, with the "New folder" button or
 `curl -d folder=photos -H "Authorization: Bearer $TOKEN" https://host/dir/`.
@@ -345,8 +354,10 @@ box: its page takes files, resumably, and shows nothing of what is in the
 folder. A name that is taken gets a number (`report (2).pdf`), so senders
 learn nothing of what is there. It works while its creator may add files
 there and share the folder. A link can also stop after a number of
-downloads (of a file from its start, or of a zip; showing it in the
-browser does not count), or for upload links of files sent.
+downloads (anything that sends a file's first byte, or a zip; showing it
+in the browser, its page or its thumbnail does not count, nor resuming a
+download further on), or for upload links of files sent (one that fails
+or is cancelled gives its use back).
 
 A link never gives more than its creator may still read and share: it
 stops working when they lose those rights, or when what it leads to is
@@ -403,8 +414,16 @@ the admin rule is still the default one. To let others share, e.g. `goftp policy
   superadmins until a rule opens them up. A superadmin can still change
   the rules, and whoever runs the server can read its files.
 - Upload links let whoever has them fill a folder, with files of up to
-  `upload.max_size` each: give them a short life, a password, or a limit
-  of files.
+  `upload.max_size` each, until the disk is down to `upload.min_free`:
+  give them a short life, a password, or a limit of files.
+- Rules compare paths as spelled. On a file system that finds names in
+  other spellings too (ignoring case or Unicode normalization), goftp
+  compares them as that file system does where the kernel tells how names
+  are stored, as on macOS, and otherwise refuses to serve the folder (FAT,
+  NTFS on Windows, case-insensitive ZFS or ext4 folders): serve a folder
+  on a case-sensitive file system there.
+- Copies stop at 100,000 entries or 64 folders deep, as symlinks can make
+  a folder hold far more than the disk does.
 
 ## Troubleshooting
 

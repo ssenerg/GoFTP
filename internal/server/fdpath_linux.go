@@ -22,3 +22,6 @@ func fdPath(f *os.File) (string, bool) {
 	}
 	return p, true
 }
+
+// pathByOpening is whether resolve opens an entry to learn its path.
+const pathByOpening = false

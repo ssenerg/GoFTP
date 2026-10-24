@@ -48,7 +48,7 @@ func TestLoadDefaults(t *testing.T) {
 	if !filepath.IsAbs(cfg.Dir) {
 		t.Errorf("dir %q is not absolute", cfg.Dir)
 	}
-	if cfg.Addr != ":8080" || cfg.Database.URL != dbURL || cfg.Auth.SessionTTL != 12*time.Hour || cfg.Upload.MaxSize != 0 {
+	if cfg.Addr != ":8080" || cfg.Database.URL != dbURL || cfg.Auth.SessionTTL != 12*time.Hour || cfg.Upload.MaxSize != 0 || cfg.Upload.MinFree != 1<<30 {
 		t.Errorf("unexpected basics: %+v", cfg)
 	}
 	if cfg.Log.Level != "info" || cfg.Log.Format != "json" {

@@ -51,6 +51,8 @@ type trashNote struct {
 	At   time.Time `json:"at"`
 	// Home is set for the home of a user who was deleted (see home.go).
 	Home bool `json:"home,omitempty"`
+	// Owner is the ID of the user whose home it was in, or was.
+	Owner int64 `json:"owner,omitempty"`
 }
 
 // trashed is an entry in the trash.
@@ -95,7 +97,11 @@ func (s *Server) openTrash(create bool) (*os.Root, error) {
 // the trash, and returns its ID there. The caller checked that it may be
 // deleted.
 func (s *Server) toTrash(c fiber.Ctx, dir *os.Root, name, realPath string, info fs.FileInfo) (string, error) {
-	return s.moveToTrash(dir, name, trashNote{Path: realPath, Dir: info.IsDir(), By: visitor(c), At: time.Now().UTC()})
+	note := trashNote{Path: realPath, Dir: info.IsDir(), By: visitor(c), At: time.Now().UTC()}
+	if home, ok := s.homeName(realPath); ok {
+		note.Owner, _, _ = s.ownerNow(home)
+	}
+	return s.moveToTrash(dir, name, note)
 }
 
 // moveToTrash moves the entry name of dir to the trash with note, and
@@ -144,6 +150,33 @@ func writeNote(box *os.Root, note trashNote) error {
 	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
+	}
+	return err
+}
+
+// rewriteNote replaces the note of the trash entry box.
+func rewriteNote(box *os.Root, note trashNote) error {
+	data, err := json.Marshal(note)
+	if err != nil {
+		return err
+	}
+	tmp := tempPrefix + rand.Text() + tempSuffix
+	f, err := box.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = box.Rename(tmp, trashInfo)
+	}
+	if err != nil {
+		_ = box.Remove(tmp)
 	}
 	return err
 }
@@ -250,15 +283,32 @@ func mayRestore(allow allowFunc, note trashNote) (restore, purge bool, err error
 	return restore, purge, err
 }
 
-// trashRights is mayRestore for the visitor of c. Superadmins may also
-// restore the home of a deleted user, for a user of that name, and delete
-// it for good, without seeing what is in it; home is set then.
+// trashRights is mayRestore for the visitor of c. The home of a deleted
+// user is for superadmins only: they may restore it, for a user of that
+// name, and delete it for good, without seeing what is in it; home is set
+// then. What a deleted user deleted from their home is nobody's (see
+// stillTheirs).
 func (s *Server) trashRights(c fiber.Ctx, note trashNote) (restore, purge, home bool, err error) {
-	if note.Home && s.auth.IsSuperadmin(visitorName(c)) {
-		return true, true, true, nil
+	if note.Home {
+		su := s.auth.IsSuperadmin(visitorName(c))
+		return su, su, su, nil
+	}
+	if !s.stillTheirs(note) {
+		return false, false, false, nil
 	}
 	restore, purge, err = mayRestore(s.visitorRules(c), note)
 	return restore, purge, false, err
+}
+
+// trashSeen reports whether the visitor of c is told that the trashed
+// entry exists, when they may not restore or delete it: if they may read
+// it where it was.
+func (s *Server) trashSeen(c fiber.Ctx, note trashNote) bool {
+	if note.Home || !s.stillTheirs(note) {
+		return false
+	}
+	may, _ := mayBoth(s.visitorRules(c), auth.ActRead, note.Path, note.Path, note.Dir)
+	return may
 }
 
 // restore puts the trashed entry id back where it was, and returns that
@@ -278,7 +328,7 @@ func (s *Server) restore(c fiber.Ctx, id string) (string, error) {
 	if err != nil {
 		return "", err
 	} else if !ok {
-		if may, _ := mayBoth(s.visitorRules(c), auth.ActRead, note.Path, note.Path, note.Dir); !may {
+		if !s.trashSeen(c, note) {
 			return "", fiber.ErrNotFound
 		}
 		return "", s.deny(c)
@@ -335,6 +385,7 @@ func (s *Server) restore(c fiber.Ctx, id string) (string, error) {
 			return "", err
 		}
 		s.homesChecked.Delete(owner.ID)
+		s.reownTrash(trash, note, owner.ID)
 	}
 	_ = trash.RemoveAll(id)
 	s.log.Info("restore", zap.String("ip", c.IP()), zap.String("user", visitor(c)), zap.String("path", note.Path),
@@ -358,7 +409,7 @@ func (s *Server) purge(c fiber.Ctx, id string) error {
 		if err != nil {
 			return err
 		} else if !ok {
-			if may, _ := mayBoth(s.visitorRules(c), auth.ActRead, note.Path, note.Path, note.Dir); !may {
+			if !s.trashSeen(c, note) {
 				return fiber.ErrNotFound
 			}
 			return s.deny(c)
@@ -394,8 +445,43 @@ func (s *Server) purge(c fiber.Ctx, id string) error {
 	return nil
 }
 
+// reownTrash gives what the user of the restored home (noted in home) had
+// deleted from it to its new owner id: the user of that name again.
+func (s *Server) reownTrash(trash *os.Root, home trashNote, id int64) {
+	if home.Owner <= 0 {
+		return
+	}
+	d, err := trash.Open(".")
+	if err != nil {
+		return
+	}
+	entries, err := d.ReadDir(-1)
+	_ = d.Close()
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !validTrashID(e.Name()) {
+			continue
+		}
+		box, err := trash.OpenRoot(e.Name())
+		if err != nil {
+			continue
+		}
+		if note, err := readNote(box); err == nil && !note.Home && note.Owner == home.Owner && inHome(home.Path, note.Path) != "" {
+			note.Owner = id
+			if err := rewriteNote(box, note); err != nil {
+				s.log.Warn("give back trashed entry", zap.String("id", e.Name()), zap.Error(err))
+			}
+		}
+		_ = box.Close()
+	}
+}
+
 // clearEmptyHome removes the home name of the folder of homes dir if it
 // holds nothing but its owner note, so that an old one can take its place.
+// The note goes first; the folder only goes if nothing else came meanwhile,
+// such as an upload of its user, and the note comes back if it stays.
 func clearEmptyHome(dir *os.Root, name string) error {
 	d, err := dir.Open(name)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -414,7 +500,20 @@ func clearEmptyHome(dir *os.Root, name string) error {
 			return nil
 		}
 	}
-	return dir.RemoveAll(name)
+	owner, _, err := readOwner(dir, name)
+	if err != nil {
+		return err
+	}
+	if err := dir.Remove(path.Join(name, homeOwner)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := dir.Remove(name); err != nil {
+		if owner > 0 {
+			return writeOwner(dir, name, owner)
+		}
+		return nil
+	}
+	return nil
 }
 
 // moveNoReplace moves the entry name of from to newName in to, unless
@@ -440,7 +539,7 @@ func moveNoReplace(from *os.Root, name string, to *os.Root, newName string, info
 		}
 		// No hard links here: rename, as checked above.
 	}
-	return renameBetween(from, name, to, newName)
+	return renameExclBetween(from, name, to, newName)
 }
 
 // purgeTrash removes what was deleted more than trash.keep ago, every

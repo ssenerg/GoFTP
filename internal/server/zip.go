@@ -65,6 +65,9 @@ func zipName(urlPath string) string {
 // the real paths of the folders being added.
 func (s *Server) zipFolder(zw *zip.Writer, urlPath, realPath, prefix string, allow allowFunc, ancestors []string) error {
 	items, err := s.readable(urlPath, realPath, allow)
+	if errors.Is(err, errChanged) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -98,11 +101,16 @@ func (s *Server) zipItems(zw *zip.Writer, items []listItem, prefix string, allow
 
 // readable lists the entries of the folder at urlPath, which really lives
 // at realPath, that allow lets the visitor read, as listings show them,
-// ordered by name.
+// ordered by name. A folder no longer at realPath, where its rights were
+// checked, such as after a symlink on the way was swapped, is errChanged.
 func (s *Server) readable(urlPath, realPath string, allow allowFunc) ([]listItem, error) {
 	d, err := s.root.Open(rootName(realPath))
 	if err != nil {
 		return nil, err
+	}
+	if real, ok := s.resolve(rootName(realPath), d); !ok || real != realPath {
+		_ = d.Close()
+		return nil, errChanged
 	}
 	items, err := s.folderItems(d, urlPath, realPath, allow)
 	_ = d.Close()
@@ -132,7 +140,11 @@ func (s *Server) zipFile(zw *zip.Writer, hdr *zip.FileHeader, realPath string) e
 		return nil
 	}
 	defer f.Close()
-	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() || !s.visible(rootName(realPath), f) {
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		return nil
+	}
+	// Its rights were checked where it was listed.
+	if real, ok := s.resolve(rootName(realPath), f); !ok || real != realPath {
 		return nil
 	}
 	hdr.Method = zip.Store

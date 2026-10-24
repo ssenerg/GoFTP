@@ -30,11 +30,11 @@
         {{range .Links}}
         <tr>
           <td class="name"><span class="link-cell">
-            <a href="{{.Href}}"><svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><span>{{.Name}}</span>
+            {{if .Href}}<a href="{{.Href}}">{{else}}<span class="private" title="Where it leads is not yours to see">{{end}}<svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><span>{{.Name}}</span>
               {{- if .Upload}}<span class="chip" title="Visitors may upload files here, without seeing what is here"><svg class="i" aria-hidden="true"><use href="#i-upload"/></svg>upload</span>{{end}}
               {{- if .Password}}<span class="chip" title="Visitors need a password"><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg>password</span>{{end}}
-              {{- if .UsedUp}}<span class="chip warn" title="It was used as often as it may be, so it no longer works">used up</span>{{end}}</a>
-            <span class="where">{{.Path}}</span>
+              {{- if .UsedUp}}<span class="chip warn" title="It was used as often as it may be, so it no longer works">used up</span>{{end}}{{if .Href}}</a>{{else}}</span>{{end}}
+            {{with .Path}}<span class="where">{{.}}</span>{{end}}
           </span></td>
           {{if $.All}}<td><span class="cell-label">By </span>{{.By}}</td>{{end}}
           <td><span class="cell-label">Used </span>{{.Uses}}<span class="faint">{{if .LastUsed}}, last <time datetime="{{.LastUsedISO}}">{{.LastUsed}}</time>{{else}}, never opened{{end}}</span></td>
