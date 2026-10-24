@@ -18,10 +18,18 @@ import (
 
 // serveZip streams the folder at urlPath, which really lives at realPath,
 // as name.zip: everything in it that allow lets the visitor open, the way
-// listings show it. Dotfiles, entries other tools are writing and folders
-// that symlinks lead back into are left out. Files are stored as they are:
-// a zip is for taking a folder along, and large files rarely compress.
+// listings show it, or of that only the entries picked with ?pick=NAME.
+// Dotfiles, entries other tools are writing and folders that symlinks lead
+// back into are left out. Files are stored as they are: a zip is for taking
+// a folder along, and large files rarely compress.
 func (s *Server) serveZip(c fiber.Ctx, urlPath, realPath, name string, allow allowFunc) error {
+	var picked map[string]bool
+	if picks := c.Request().URI().QueryArgs().PeekMulti("pick"); len(picks) > 0 {
+		picked = make(map[string]bool, len(picks))
+		for _, p := range picks {
+			picked[string(p)] = true
+		}
+	}
 	c.Set(fiber.HeaderContentType, "application/zip")
 	c.Set(fiber.HeaderContentDisposition, mime.FormatMediaType("attachment", map[string]string{"filename": name + ".zip"}))
 	c.Set(fiber.HeaderCacheControl, "no-store")
@@ -29,7 +37,14 @@ func (s *Server) serveZip(c fiber.Ctx, urlPath, realPath, name string, allow all
 	z := &zipStream{conn: c.RequestCtx().Conn(), timeout: s.cfg.Server.WriteTimeout}
 	z.produce = func(w io.Writer) error {
 		zw := zip.NewWriter(w)
-		if err := s.zipFolder(zw, urlPath, realPath, "", allow, []string{realPath}); err != nil {
+		items, err := s.readable(urlPath, realPath, allow)
+		if err != nil {
+			return err
+		}
+		if picked != nil {
+			items = slices.DeleteFunc(items, func(it listItem) bool { return !picked[it.Name] })
+		}
+		if err := s.zipItems(zw, items, "", allow, []string{realPath}); err != nil {
 			return err
 		}
 		return zw.Close()
@@ -53,6 +68,12 @@ func (s *Server) zipFolder(zw *zip.Writer, urlPath, realPath, prefix string, all
 	if err != nil {
 		return err
 	}
+	return s.zipItems(zw, items, prefix, allow, ancestors)
+}
+
+// zipItems adds items, entries of one folder, to zw under prefix, and what
+// the folders among them hold.
+func (s *Server) zipItems(zw *zip.Writer, items []listItem, prefix string, allow allowFunc, ancestors []string) error {
 	for _, item := range items {
 		hdr := &zip.FileHeader{Name: prefix + item.Name, Modified: item.mod}
 		if !item.IsDir {

@@ -334,7 +334,38 @@
   .popover input { height: 38px; }
   .popover-error { color: var(--danger); font-size: 13px; }
   .popover-actions { display: flex; justify-content: flex-end; gap: 8px; }
-  .files tbody tr.new td, .files tbody tr.selected td { background: var(--accent-soft); }
+  .files tbody tr.new td, .files tbody tr.selected td, .files tbody tr.picked td { background: var(--accent-soft); }
+  .files th.pick, .files td.pick { width: 44px; padding: 0 0 0 16px; }
+  .files td.pick input, .files th.pick input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); vertical-align: middle; }
+  .picked {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 16px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .picked.live {
+    position: sticky;
+    bottom: 12px;
+    z-index: 10;
+    margin: 0 8px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: var(--shadow-lg);
+    color: var(--text);
+    font-weight: 600;
+  }
+  .picked-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .picked-pop { position: relative; }
+  .picked-pop > summary { list-style: none; -webkit-tap-highlight-color: transparent; }
+  .picked-pop > summary::-webkit-details-marker { display: none; }
+  .picked-pop[open] > summary { background: var(--hover); }
+  .picked-pop .popover { top: auto; bottom: calc(100% + 8px); font-weight: 400; }
   .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .files th.act, .files td.act { width: 52px; padding: 0 10px; text-align: right; }
   .files td.act { position: relative; }

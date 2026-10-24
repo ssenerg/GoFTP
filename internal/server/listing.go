@@ -124,9 +124,10 @@ type listing struct {
 	TrashKeep string
 	// Copy is set when the visitor may add files somewhere, so copying
 	// entries elsewhere is of use.
-	Copy     bool
-	Manage   bool      // some entry may be renamed, moved, copied, deleted or shared
-	Selected *listItem // its forms are shown
+	Copy      bool
+	DeleteAny bool      // some entry may be deleted
+	Manage    bool      // some entry may be renamed, moved, copied, deleted or shared
+	Selected  *listItem // its forms are shown
 	// ShareHere is set when the visitor may share this folder.
 	ShareHere bool
 }
@@ -218,6 +219,28 @@ func (it listItem) ActionsLabel(copy bool) string {
 	return strings.ToUpper(label[:1]) + label[1:] + " " + it.Name
 }
 
+// Folder is the listing's folder as a path to type, ending in "/".
+func (l listing) Folder() string { return object(l.Path, true) }
+
+// PickHint says what entries can be ticked for, e.g. "download, copy or
+// delete".
+func (l listing) PickHint() string {
+	acts := []string{"download"}
+	if l.Copy && l.DeleteAny {
+		acts = append(acts, "move")
+	}
+	if l.Copy {
+		acts = append(acts, "copy")
+	}
+	if l.DeleteAny {
+		acts = append(acts, "delete")
+	}
+	if n := len(acts); n > 1 {
+		return strings.Join(acts[:n-1], ", ") + " or " + acts[n-1]
+	}
+	return acts[0]
+}
+
 // SortHref links a column header: a second click reverses the order.
 func (l listing) SortHref(col string) string {
 	if l.Sort == col && !l.Desc {
@@ -270,6 +293,7 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 			return err
 		}
 		data.Manage = data.Manage || item.CanDelete || item.CanShare
+		data.DeleteAny = data.DeleteAny || item.CanDelete
 	}
 	data.Copy = len(data.Items) > 0 && s.auth.MayWrite(visitorName(c))
 	data.Manage = data.Manage || data.Copy

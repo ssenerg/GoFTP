@@ -132,12 +132,17 @@ func unique(names []string) []string {
 
 // partialError reports a change of several entries that failed, naming
 // those already done before the failure, e.g. "Deleted before the error:
-// a.txt, b.txt".
+// a.txt, b.txt", after the explanation of err, if it has one.
 func (s *Server) partialError(c fiber.Ctx, did string, done []string, err error) error {
 	if len(done) == 0 {
 		return err
 	}
-	return s.sendError(c, err, did+" before the error: "+strings.Join(done, ", "))
+	detail := did + " before the error: " + strings.Join(done, ", ") + "."
+	var ex *explained
+	if errors.As(err, &ex) {
+		detail = ex.detail + " " + detail
+	}
+	return s.sendError(c, err, detail)
 }
 
 // deleteEntry handles DELETE requests, e.g. curl -X DELETE https://host/dir/a.txt

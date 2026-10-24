@@ -429,6 +429,112 @@
     });
   }
 
+  // Picking entries to act on them together: a bar below the list follows
+  // the ticks. Its zip downloads as usual; its other forms say in place why
+  // they failed, and on success the page says what happened.
+  const picked = $("#picked");
+  if (picked) {
+    const boxes = $$("input[name=pick]");
+    const all = $(".pick-all");
+    const count = $(".picked-count", picked);
+    const clear = $(".picked-clear", picked);
+    const shown = b => !b.closest("tr").hidden;
+    let last = null;
+    const update = () => {
+      const n = boxes.filter(b => b.checked).length;
+      for (const b of boxes) b.closest("tr").classList.toggle("picked", b.checked);
+      picked.hidden = n === 0;
+      count.textContent = `${n} picked`;
+      clear.hidden = n === 0;
+      const visible = boxes.filter(shown);
+      all.checked = visible.length > 0 && visible.every(b => b.checked);
+      all.indeterminate = n > 0 && !all.checked;
+    };
+    picked.classList.add("live");
+    all.hidden = false;
+    all.addEventListener("change", () => {
+      for (const b of boxes.filter(shown)) b.checked = all.checked;
+      update();
+    });
+    for (const [i, b] of boxes.entries()) {
+      b.addEventListener("click", e => {
+        // Shift-click ticks or unticks the run from the last one clicked.
+        if (e.shiftKey && last !== null) {
+          for (const other of boxes.slice(Math.min(last, i), Math.max(last, i) + 1).filter(shown)) other.checked = b.checked;
+        }
+        last = i;
+        update();
+      });
+    }
+    clear.addEventListener("click", () => {
+      for (const b of boxes) b.checked = false;
+      update();
+    });
+    // Browsers keep ticks across reloads.
+    update();
+
+    const pops = $$(".picked-pop", picked);
+    for (const box of pops) {
+      box.addEventListener("toggle", () => {
+        if (!box.open) return;
+        for (const other of pops) if (other !== box) other.open = false;
+        const field = $("input[name=into]", box) || $("button[type=submit]", box);
+        field.focus();
+      });
+      box.addEventListener("keydown", e => {
+        if (e.key === "Escape" && box.open) {
+          box.open = false;
+          $("summary", box).focus();
+        }
+      });
+    }
+    document.addEventListener("click", e => {
+      for (const box of pops) if (box.open && !box.contains(e.target)) box.open = false;
+    });
+
+    const pickFailed = {
+      0: "The connection was lost. Try again.",
+      400: "Name the folder as a path, such as /photos/2024.",
+      401: "You were signed out. Sign in and try again.",
+      403: "You may not do that with all of them.",
+      404: "One of them, or that folder, is no longer there. Reload the page.",
+      409: "One of them is being uploaded right now, or its name is taken there.",
+    };
+    picked.addEventListener("submit", async e => {
+      const op = e.submitter && e.submitter.name === "op" ? e.submitter.value : "";
+      if (!op) return;
+      e.preventDefault();
+      const pop = e.submitter.closest(".popover");
+      const error = $(".popover-error", pop);
+      const body = new URLSearchParams(new FormData(picked));
+      body.set("op", op);
+      const action = picked.getAttribute("action");
+      const buttons = $$("button", pop);
+      for (const b of buttons) b.disabled = true;
+      let resp = null;
+      let status = 0;
+      try {
+        resp = await fetch(action, { method: "POST", body });
+        status = resp.status;
+      } catch {
+        status = 0;
+      }
+      for (const b of buttons) b.disabled = false;
+      const n = body.getAll("pick").length;
+      if (status === 204 && op === "delete") {
+        const ids = (resp.headers.get("Goftp-Trash-Ids") || "").split(",").map(id => id.trim()).filter(Boolean);
+        location.assign(action + `?deleted=${n}` + (ids.length === 1 && n === 1 ? "&undo=" + encodeURIComponent(ids[0]) : ids.length ? "&trashed=1" : ""));
+        return;
+      }
+      if (status === 201) {
+        location.assign(action + `?${op === "move" ? "moved" : "copied"}=${n}&to=` + encodeURIComponent(body.get("into").trim()));
+        return;
+      }
+      error.textContent = (await detailOf(resp)) || pickFailed[status] || `That failed (error ${status}).`;
+      error.hidden = false;
+    });
+  }
+
   // Copy buttons, for temporary passwords and links shown once.
   for (const button of $$("button[data-copy]")) {
     const source = document.getElementById(button.dataset.copy);

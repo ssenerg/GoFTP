@@ -111,6 +111,7 @@
     {{if .Items}}
     <table class="files">
       <thead><tr>
+        <th class="pick"><input type="checkbox" class="pick-all" aria-label="Pick all" hidden></th>
         <th aria-sort="{{.SortState "name"}}"><a href="{{.SortHref "name"}}">Name</a></th>
         <th class="num" aria-sort="{{.SortState "size"}}"><a href="{{.SortHref "size"}}">Size</a></th>
         <th class="date" aria-sort="{{.SortState "modified"}}"><a href="{{.SortHref "modified"}}">Modified</a></th>
@@ -118,10 +119,11 @@
       </tr></thead>
       <tbody>
         {{with .Parent}}
-        <tr class="up"><td class="name" colspan="{{if $.Manage}}4{{else}}3{{end}}"><a href="{{.}}"><svg class="i kind" aria-hidden="true"><use href="#i-up"/></svg><span>Parent folder</span></a></td></tr>
+        <tr class="up"><td class="pick"></td><td class="name" colspan="{{if $.Manage}}4{{else}}3{{end}}"><a href="{{.}}"><svg class="i kind" aria-hidden="true"><use href="#i-up"/></svg><span>Parent folder</span></a></td></tr>
         {{end}}
         {{range .Items}}
         <tr data-name="{{.Key}}"{{if .Selected}} class="selected"{{else if .New}} class="new"{{end}}>
+          <td class="pick"><input type="checkbox" name="pick" value="{{.Name}}" form="picked" aria-label="Pick {{.Name}}"></td>
           <td class="name"><a href="{{.Href}}{{if .Preview}}?view{{end}}">{{if .Thumb}}<span class="thumb-box"><svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><img class="thumb" src="{{.Href}}?thumb" alt="" loading="lazy" decoding="async"></span>{{else}}<svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg>{{end}}<span>{{.Name}}</span></a></td>
           <td class="num">{{.Size}}</td>
           <td class="date"><time datetime="{{.ModISO}}">{{.ModTime}}</time></td>
@@ -130,6 +132,36 @@
         {{end}}
       </tbody>
     </table>
+    <form id="picked" class="picked" method="post" action="{{.Action}}">
+      <span class="picked-count" aria-live="polite">Tick entries to {{.PickHint}} them together.</span>
+      <div class="picked-actions">
+        <button type="submit" class="btn small" formmethod="get" name="zip" value=""><svg class="i" aria-hidden="true"><use href="#i-archive"/></svg>Download zip</button>
+        {{- if .Copy}}
+        <details class="picked-pop">
+          <summary class="btn small"><svg class="i" aria-hidden="true"><use href="#i-copy"/></svg>{{if .DeleteAny}}Move or copy{{else}}Copy{{end}}</summary>
+          <div class="popover">
+            <label class="field"><span>To the folder</span>
+              <input name="into" value="{{.Folder}}" maxlength="4000" autocomplete="off" spellcheck="false" list="folders">
+            </label>
+            <p class="popover-error" role="alert" hidden></p>
+            <div class="popover-actions"><button type="submit" name="op" value="copy" class="btn small">Copy</button>{{if .DeleteAny}}<button type="submit" name="op" value="move" class="btn primary small">Move</button>{{end}}</div>
+          </div>
+        </details>
+        {{- end}}
+        {{- if .DeleteAny}}
+        <details class="picked-pop">
+          <summary class="btn small"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Delete</summary>
+          <div class="popover">
+            <p class="delete-note">{{if .TrashKeep}}Move what is ticked to the trash? It can be restored from there for {{.TrashKeep}}.{{else}}Delete what is ticked, folders with everything in them? This cannot be undone.{{end}}</p>
+            {{if .TrashKeep}}<label class="check"><input type="checkbox" name="permanent" value="1"> Delete it for good instead</label>{{end}}
+            <p class="popover-error" role="alert" hidden></p>
+            <div class="popover-actions"><button type="submit" name="op" value="delete" class="btn danger small"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Delete</button></div>
+          </div>
+        </details>
+        {{- end}}
+        <button type="button" class="btn small picked-clear" hidden>Clear</button>
+      </div>
+    </form>
     {{if .Manage}}<template id="item-actions">{{template "item-forms" ($.Forms nil)}}</template>{{end}}
     <div id="no-match" class="empty" hidden><svg class="i" aria-hidden="true"><use href="#i-search"/></svg><p>Nothing here matches your filter.</p></div>
     {{else}}

@@ -217,7 +217,7 @@ func (s *Server) serveSharedDir(c fiber.Ctx, dir *os.File, view *shareView, urlP
 			it.Href += "/"
 		}
 	}
-	data := listing{page: s.sharePage(c, view, shareName(urlPath)), Path: rel, Home: view.Root,
+	data := listing{page: s.sharePage(c, view, shareName(urlPath)), Path: rel, Home: view.Root, Action: escapePath(view.base + object(rel, true)),
 		Crumbs: crumbs(view.base, rel), Items: items, Summary: summaryOf(items)}
 	if rel != "/" {
 		data.Title = path.Base(rel)
