@@ -331,31 +331,48 @@ passwords ignore case and surrounding spaces).
 Every push to `main` that passes CI is deployed to a Linux server with
 Docker Compose: the `docker` job publishes the image to `ghcr.io` (see
 [Quick start](#quick-start-with-docker-compose)), and the `deploy` job sends
-that same image over SSH and runs [`deploy/deploy.sh`](deploy/deploy.sh)
-there, which restarts goftp with it. If goftp does not keep running, the script puts the image that
-ran before back and the job fails, with goftp's last logs. The server pulls
-no goftp image from a registry; it needs the `postgres:18-alpine` image
-once, as before.
+its digest over SSH. The key GitHub signs in with runs nothing but
+[`deploy/deploy.sh`](deploy/deploy.sh) there, which pulls exactly that
+image and restarts goftp with it. If goftp does not keep running, the
+script puts the image that ran before back and the job fails; goftp's last
+logs go to the server's journal (`journalctl -t goftp-deploy`), not to the
+public CI log. The server needs to reach `ghcr.io`, and the
+`postgres:18-alpine` image once.
 
-Once, on the server, as root: a user to deploy as (in the `docker` group,
-which is as good as root on that server) and the directory goftp runs
-from, holding your `.env` (see [`.env.example`](.env.example)):
+A leaked key can therefore only deploy images published to that
+repository, in the setup the server has: the script, `docker-compose.yml`
+and `.env` belong to root, and the key cannot change them. When
+`deploy/deploy.sh` or `docker-compose.yml` change here, install them on the
+server again, as below.
+
+Once, on the server, as root, in a clone of this repository: a user to
+deploy as (in the `docker` group, which is as good as root on that
+server) and the directory goftp runs from, which it may read but not
+change, with your `.env` (see [`.env.example`](.env.example)):
 
 ```sh
 useradd --create-home --groups docker deploy
-install -d -o deploy -g deploy -m 750 /opt/goftp
-install -o deploy -g deploy -m 600 .env /opt/goftp/.env
+install -d -o root -g deploy -m 750 /opt/goftp
+install -o root -g deploy -m 640 docker-compose.yml .env /opt/goftp/
+install -o root -g deploy -m 750 deploy/deploy.sh /opt/goftp/
 ```
 
-On your computer, a key for GitHub to sign in with. Add `goftp-deploy.pub`
-to `~deploy/.ssh/authorized_keys` on the server, with `restrict ` in front
-of it (no shells, no forwarding), and check the server's key that
-`ssh-keyscan` prints against `ssh-keygen -lf
-/etc/ssh/ssh_host_ed25519_key.pub` on the server:
+On your computer, a key for GitHub to sign in with, and the server's key
+for GitHub to check it by. Check the key `ssh-keyscan` prints against
+`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the server:
 
 ```sh
 ssh-keygen -t ed25519 -N '' -C goftp-deploy -f goftp-deploy
 ssh-keyscan -t ed25519 SERVER > known_hosts   # with -p PORT for another port
+```
+
+Add `goftp-deploy.pub` to `~deploy/.ssh/authorized_keys` on the server,
+with the image it may deploy in front of it. `restrict` takes away shells,
+terminals and forwarding; `command` runs whatever GitHub asks for, with
+what it asked for as the digest:
+
+```
+restrict,command="/opt/goftp/deploy.sh ghcr.io/OWNER/goftp" ssh-ed25519 AAAA... goftp-deploy
 ```
 
 On GitHub, under Settings → Environments, create the environment
@@ -370,25 +387,28 @@ rm goftp-deploy   # GitHub has it now
 ```
 
 Its variables, all optional: `DEPLOY_USER` (`deploy`), `DEPLOY_PORT`
-(`22`), `DEPLOY_PATH` (`/opt/goftp`), `DEPLOY_PLATFORM` (`linux/amd64`;
-`linux/arm64` when `uname -m` says `aarch64`) and `DEPLOY_URL`, the
-address shown with each deploy. Until the secrets are set, the job skips
-deploying with a warning.
+(`22`) and `DEPLOY_URL`, the address shown with each deploy. Until the
+secrets are set, the job skips deploying with a warning. If the package on
+`ghcr.io` is private, sign the server in to it once with a token that may
+read packages: `sudo -u deploy docker login ghcr.io`.
 
 Compose names volumes after the directory: from `/opt/goftp` they are
 `goftp_pgdata` and so on, as for a clone in a directory named `goftp`. If
 goftp ran from a directory with another name before, set
 `COMPOSE_PROJECT_NAME` to that name in `.env`, or the database starts out
-empty. Manage goftp from the new directory from then on, e.g. `cd
-/opt/goftp && docker compose exec goftp goftp user list`.
+empty. Manage goftp from the new directory from then on, as root or
+`deploy`, who may read `.env`: e.g. `cd /opt/goftp && sudo -u deploy docker
+compose exec goftp goftp user list`.
 
 To deploy again, run the CI workflow on `main` (Actions → CI → Run
 workflow). To go back to an earlier version, re-run the CI run of its
-commit (which also points `latest` back to it), or on the server go back
-one deploy:
+commit (which also points `latest` back to it), deploy its digest by hand
+(`docker buildx imagetools inspect ghcr.io/OWNER/goftp:sha-COMMIT` shows it),
+or go back one deploy:
 
 ```sh
-cd /opt/goftp && docker image tag goftp:previous goftp:latest && docker compose up -d --force-recreate goftp
+sudo -u deploy /opt/goftp/deploy.sh ghcr.io/OWNER/goftp sha256:DIGEST
+cd /opt/goftp && sudo -u deploy sh -c 'docker image tag goftp:previous goftp:latest && docker compose up -d --force-recreate goftp'
 ```
 
 Older versions skip database migrations they do not know, so going back

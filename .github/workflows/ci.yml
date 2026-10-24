@@ -103,7 +103,9 @@ jobs:
           source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY
           description="Resumable file server with users, roles and share links"
           # Docker's default builder cannot build several platforms at once.
-          docker buildx create --use --driver docker-container >/dev/null
+          # Its image is pinned: it builds and pushes what gets deployed.
+          docker buildx create --use --driver docker-container \
+            --driver-opt image=moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea >/dev/null
           docker buildx build --pull --platform linux/amd64,linux/arm64 \
             --label org.opencontainers.image.title=goftp \
             --label "org.opencontainers.image.description=$description" \
@@ -119,25 +121,20 @@ jobs:
         if: always() && env.PUBLISH == 'true'
         run: docker logout ghcr.io
 
-  # Sends the image the docker job published to the server over SSH, where
-  # deploy/deploy.sh starts it, for every push to main that passes. See
+  # Tells the server, over SSH, the digest of the image the docker job
+  # published, for every push to main that passes. The server's key runs
+  # only deploy/deploy.sh there, which pulls that image and starts it. See
   # "Deploying" in the README for the settings of the production environment.
   deploy:
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: [test, docker]
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: read
     environment:
       name: production
       url: ${{ vars.DEPLOY_URL }}
     concurrency:
       group: deploy
       cancel-in-progress: false
-    env:
-      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/goftp' }}
-      DEPLOY_PLATFORM: ${{ vars.DEPLOY_PLATFORM || 'linux/amd64' }}
     steps:
       - name: Settings
         id: settings
@@ -151,43 +148,7 @@ jobs:
             echo "ready=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # It is quoted in remote commands.
-          if ! printf '%s' "$DEPLOY_PATH" | grep -Eqx '/[A-Za-z0-9._/-]+'; then
-            echo "::error::DEPLOY_PATH must be an absolute path of letters, digits and . _ - /"
-            exit 1
-          fi
-          case $DEPLOY_PLATFORM in
-            linux/amd64 | linux/arm64) ;;
-            *) echo "::error::DEPLOY_PLATFORM must be linux/amd64 or linux/arm64, the platforms images are published for"; exit 1 ;;
-          esac
           echo "ready=true" >> "$GITHUB_OUTPUT"
-      - if: steps.settings.outputs.ready == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # The published image for the server's platform, by digest: the server
-      # runs exactly what ghcr.io has, and pulls nothing itself.
-      - name: Image
-        if: steps.settings.outputs.ready == 'true'
-        env:
-          INDEX: ${{ needs.docker.outputs.digest }}
-          TOKEN: ${{ github.token }}
-        run: |
-          image=ghcr.io/${GITHUB_REPOSITORY,,}
-          case $INDEX in
-            sha256:*) ;;
-            *) echo "::error::The docker job published no image (digest: '$INDEX')"; exit 1 ;;
-          esac
-          printf '%s' "$TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          digest=$(docker buildx imagetools inspect --raw "$image@$INDEX" | jq -r --arg arch "${DEPLOY_PLATFORM#linux/}" \
-            '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest')
-          if [ -z "$digest" ]; then
-            echo "::error::$image@$INDEX has no image for $DEPLOY_PLATFORM"
-            exit 1
-          fi
-          docker pull "$image@$digest"
-          docker tag "$image@$digest" goftp:latest
-          docker logout ghcr.io
       - name: SSH
         if: steps.settings.outputs.ready == 'true'
         env:
@@ -211,12 +172,18 @@ jobs:
             BatchMode yes
             ServerAliveInterval 15
           EOF
+      # Whatever command is sent, the server's key runs deploy.sh, which
+      # takes the command as the digest to deploy.
       - name: Deploy
         if: steps.settings.outputs.ready == 'true'
+        env:
+          DIGEST: ${{ needs.docker.outputs.digest }}
         run: |
-          tar -cf - docker-compose.yml -C deploy deploy.sh |
-            ssh server "mkdir -p '$DEPLOY_PATH' && tar -xf - -C '$DEPLOY_PATH'"
-          docker save goftp:latest | gzip | ssh server "sh '$DEPLOY_PATH/deploy.sh'"
+          case $DIGEST in
+            sha256:*) ;;
+            *) echo "::error::The docker job published no image (digest: '$DIGEST')"; exit 1 ;;
+          esac
+          ssh server "$DIGEST" < /dev/null
       - name: Forget the key
         if: always()
         run: rm -f ~/.ssh/deploy_key
