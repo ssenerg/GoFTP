@@ -43,7 +43,7 @@ func grant(t *testing.T, owner *fixture, p, user, access string) int64 {
 
 func TestFolderSharing(t *testing.T) {
 	ta := newTestAuth(t)
-	f := newFixtureWith(t, ta, withHomes, func(cfg *config.Config) { cfg.Homes.Quota = 1000 })
+	f := newFixtureWith(t, ta, withHomes, func(cfg *config.Config) { cfg.Homes.Quota = 64 << 10 })
 	dora := f.signedIn(ta.addUser(t, "dora", "user"))
 	erin := f.signedIn(ta.addUser(t, "erin", "user"))
 	finn := f.signedIn(ta.addUser(t, "finn", "user"))
@@ -160,9 +160,9 @@ func TestFolderSharing(t *testing.T) {
 		}
 	}
 	// What they add counts against the owner's home.
-	resp, _ = erin.send(t, "PUT", "/home/dora/docs/big.bin", strings.NewReader(strings.Repeat("x", 1200)))
+	resp, _ = erin.send(t, "PUT", "/home/dora/docs/big.bin", strings.NewReader(strings.Repeat("x", 60_000)))
 	expectStatus(t, resp, http.StatusInsufficientStorage)
-	resp, _ = erin.send(t, "PUT", "/home/erin/big.bin", strings.NewReader(strings.Repeat("x", 900)))
+	resp, _ = erin.send(t, "PUT", "/home/erin/big.bin", strings.NewReader(strings.Repeat("x", 60_000)))
 	expectStatus(t, resp, http.StatusCreated)
 
 	// The Shared pages of both, and of a superadmin, who sees nothing of

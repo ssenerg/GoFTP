@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -188,6 +189,29 @@ func (s *Service) RevokeShare(ctx context.Context, u *User, id int64, all bool) 
 		return s.store.DeleteShare(ctx, id, 0)
 	}
 	return s.store.DeleteShare(ctx, id, u.ID)
+}
+
+// MoveShares has the links to the file or folder at the URL path from, and
+// to what is in it, follow it to to, where it moved; they end with to "",
+// as it was deleted. Links left at to by what is gone end as well: none
+// may reach what takes the place of what it led to.
+func (s *Service) MoveShares(ctx context.Context, from, to string) error {
+	links, err := s.store.Shares(ctx, 0)
+	if err != nil {
+		return err
+	}
+	for _, sh := range links {
+		switch {
+		case s.within(sh.Path, from) && to != "":
+			err = s.store.MoveShare(ctx, sh.ID, to+below(sh.Path, from))
+		case s.within(sh.Path, from), to != "" && s.within(sh.Path, to):
+			err = s.store.DeleteShare(ctx, sh.ID, 0)
+		}
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
+	}
+	return nil
 }
 
 // MayShare reports whether username may create links anywhere at all.

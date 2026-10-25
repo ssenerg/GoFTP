@@ -80,14 +80,22 @@ func (s *Server) countHome(name string, u *homeUse) error {
 	return nil
 }
 
+// folderBytes is what a folder counts for in a home, its share of the disk
+// on most file systems: empty, it would count for nothing, and folders
+// could be made without end.
+const folderBytes = 4096
+
 // treeBytes adds up the files in the folder dir and the folders in it,
 // hidden ones too, such as unfinished uploads: they take space as well, but
 // for goftp's notes (whose a home is, what a trash entry is) and locks. A
-// file with more names counts once.
+// file with more names counts once; each folder in dir counts folderBytes.
 func treeBytes(dir *os.Root) int64 {
 	var n int64
 	seen := map[[2]uint64]bool{}
 	_ = fs.WalkDir(dir.FS(), ".", func(p string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() && p != "." {
+			n += folderBytes
+		}
 		if err != nil || !d.Type().IsRegular() || p == homeOwner || p == trashInfo {
 			return nil
 		}
@@ -170,6 +178,29 @@ func (s *Server) homeRoom(name string, n int64) error {
 	return nil
 }
 
+// folderRoom checks, before a folder is made in dir, that the disk is not
+// down to upload.min_free, and that the folder fits in the home dir is in,
+// if any, where it then counts as held.
+func (s *Server) folderRoom(dir *os.Root) error {
+	if !s.roomFor(dir, folderBytes) {
+		return errLowSpace
+	}
+	name := s.homeAt(dir)
+	if name == "" {
+		return nil
+	}
+	u, err := s.homeUse(name)
+	if err != nil {
+		return err
+	}
+	defer u.mu.Unlock()
+	if u.quota > 0 && u.used+folderBytes > u.quota {
+		return errQuota
+	}
+	u.used += folderBytes
+	return nil
+}
+
 // homeAt returns the name of the home that the folder dir is in, if any.
 func (s *Server) homeAt(dir *os.Root) string {
 	if s.cfg.Homes.Path == "" {
@@ -211,6 +242,10 @@ func (s *Server) dirPath(dir *os.Root) (string, bool) {
 // file is made.
 func (s *Server) writeGuard(dir *os.Root, w io.Writer, credit int64) (io.Writer, error) {
 	g := &guardWriter{w: w, space: s.spaceGuard(dir), credit: credit}
+	// Before anything is written, for files that stay empty.
+	if g.space != nil && !s.roomFor(dir, 0) {
+		return nil, errLowSpace
+	}
 	if name := s.homeAt(dir); name != "" {
 		u, err := s.homeUse(name)
 		if err != nil {

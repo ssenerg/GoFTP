@@ -462,17 +462,20 @@ func (s *Server) completeUpload(c fiber.Ctx, dir *os.Root, up *auth.Upload, righ
 		s.dropUpload(up)
 		return err
 	}
+	// Forgotten before its temp file goes: a HEAD that finds that gone
+	// drops the upload (see dropUpload), and must not give its use of a
+	// link back.
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+	if err := s.auth.DeleteUpload(ctx, up.ID); err != nil && !errors.Is(err, auth.ErrNotFound) {
+		s.log.Warn("forget upload", zap.Int64("upload", up.ID), zap.Error(err))
+	}
 	// Linking leaves the temp file behind.
 	_ = dir.Remove(up.Temp)
 	if !up.Mtime.IsZero() {
 		if err := dir.Chtimes(name, time.Now(), up.Mtime); err != nil {
 			s.log.Warn("keep modification time", zap.String("path", path.Join(up.Dir, name)), zap.Error(err))
 		}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
-	defer cancel()
-	if err := s.auth.DeleteUpload(ctx, up.ID); err != nil {
-		s.log.Warn("forget upload", zap.Int64("upload", up.ID), zap.Error(err))
 	}
 	s.logUpload(c, path.Join(up.Dir, name), up.Length, created)
 	return nil
@@ -540,13 +543,16 @@ func (s *Server) releaseUpload(up *auth.Upload, writer string) {
 }
 
 // dropUpload forgets an upload and removes what arrived. An upload through
-// a link gives its use of the link back.
+// a link gives its use of the link back, unless it was forgotten already:
+// it may have been stored meanwhile.
 func (s *Server) dropUpload(up *auth.Upload) {
 	s.removePartial(up)
 	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
 	defer cancel()
 	if err := s.auth.DeleteUpload(ctx, up.ID); err != nil {
-		s.log.Warn("forget upload", zap.Int64("upload", up.ID), zap.Error(err))
+		if !errors.Is(err, auth.ErrNotFound) {
+			s.log.Warn("forget upload", zap.Int64("upload", up.ID), zap.Error(err))
+		}
 		return
 	}
 	s.unuseLink(up.ShareID, up.Length)

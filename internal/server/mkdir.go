@@ -56,6 +56,9 @@ func (s *Server) makeFolder(c fiber.Ctx, urlPath, name string) error {
 		return err
 	}
 	defer release()
+	if err := s.folderRoom(dir); err != nil {
+		return s.uploadError(&requestBody{}, err)
+	}
 	if err := dir.Mkdir(name, 0o755); errors.Is(err, fs.ErrExist) {
 		return fiber.ErrConflict
 	} else if err != nil {

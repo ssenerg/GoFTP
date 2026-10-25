@@ -7,22 +7,28 @@ import (
 )
 
 // errLowSpace stops writing short of the disk's last upload.min_free bytes,
-// which are kept for the database and everything else on it. Like a full
-// disk, it answers 507.
-var errLowSpace = fmt.Errorf("less than upload.min_free left on the disk: %w", syscall.ENOSPC)
+// which are kept for the database and everything else on it, and of its
+// last inodes (see inodeReserve). Like a full disk, it answers 507.
+var errLowSpace = fmt.Errorf("the disk is down to its last upload.min_free bytes or inodes: %w", syscall.ENOSPC)
 
 // spaceCheckEvery is how much is written between looks at the free space.
 const spaceCheckEvery = 8 << 20
 
-// roomFor reports whether n more bytes fit in the folder dir above
-// upload.min_free; true where the free space cannot be known.
+// With upload.min_free, the last 1/inodeReserve of a disk's inodes are
+// kept too, where it counts them: each file and folder takes one, and
+// empty ones take no bytes.
+const inodeReserve = 100
+
+// roomFor reports whether n more bytes, and a file or folder, fit in the
+// folder dir above upload.min_free; true where the free space cannot be
+// known.
 func (s *Server) roomFor(dir *os.Root, n int64) bool {
 	min := int64(s.cfg.Upload.MinFree)
 	if min <= 0 {
 		return true
 	}
-	free, ok := freeSpace(dir)
-	return !ok || free-n >= min
+	free, fewInodes, ok := diskSpace(dir)
+	return !ok || free-n >= min && !fewInodes
 }
 
 // spaceGuard returns what checks, for writes into the folder dir, that the

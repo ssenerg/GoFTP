@@ -91,12 +91,13 @@ func (s *PgStore) SetPassword(ctx context.Context, userID int64, passwordHash st
 	})
 }
 
-func (s *PgStore) CreateAppPassword(ctx context.Context, tokenHash []byte, ap *AppPassword) error {
+func (s *PgStore) CreateAppPassword(ctx context.Context, tokenHash []byte, ap *AppPassword, passwordHash string) error {
 	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		// The row lock serializes a user's app passwords, so they cannot
-		// exceed the limit together.
+		// exceed the limit together, and orders this against SetPassword,
+		// as in CreateSession.
 		var id int64
-		err := tx.QueryRow(ctx, "SELECT id FROM users WHERE id = $1 FOR UPDATE", ap.UserID).Scan(&id)
+		err := tx.QueryRow(ctx, "SELECT id FROM users WHERE id = $1 AND password_hash = $2 FOR UPDATE", ap.UserID, passwordHash).Scan(&id)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -347,12 +348,17 @@ func setRecoveryCodes(ctx context.Context, tx pgx.Tx, userID int64, hashes [][]b
 	return err
 }
 
-func (s *PgStore) CreatePasskey(ctx context.Context, pk *Passkey) error {
+func (s *PgStore) CreatePasskey(ctx context.Context, pk *Passkey, passwordHash string) error {
 	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		// The row lock serializes a user's passkeys, so they cannot exceed
-		// the limit together.
-		if _, err := tx.Exec(ctx, "SELECT 1 FROM users WHERE id = $1 FOR UPDATE", pk.UserID); err != nil {
+		// the limit together, and orders this against SetPassword, as in
+		// CreateSession.
+		tag, err := tx.Exec(ctx, "SELECT 1 FROM users WHERE id = $1 AND password_hash = $2 FOR UPDATE", pk.UserID, passwordHash)
+		if err != nil {
 			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
 		}
 		var n int
 		if err := tx.QueryRow(ctx, "SELECT count(*) FROM passkeys WHERE user_id = $1", pk.UserID).Scan(&n); err != nil {
@@ -361,7 +367,7 @@ func (s *PgStore) CreatePasskey(ctx context.Context, pk *Passkey) error {
 		if n >= MaxPasskeys {
 			return ErrTooMany
 		}
-		err := tx.QueryRow(ctx, `INSERT INTO passkeys (user_id, name, credential_id, credential) VALUES ($1, $2, $3, $4)
+		err = tx.QueryRow(ctx, `INSERT INTO passkeys (user_id, name, credential_id, credential) VALUES ($1, $2, $3, $4)
 			ON CONFLICT (credential_id) DO NOTHING RETURNING id, created_at`, pk.UserID, pk.Name, pk.CredentialID, pk.Credential).
 			Scan(&pk.ID, &pk.CreatedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -567,6 +573,14 @@ func (s *PgStore) DeleteShare(ctx context.Context, id, userID int64) error {
 	return err
 }
 
+func (s *PgStore) MoveShare(ctx context.Context, id int64, p string) error {
+	tag, err := s.db.Exec(ctx, "UPDATE shares SET path = $2 WHERE id = $1", id, p)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = ErrNotFound
+	}
+	return err
+}
+
 func (s *PgStore) DeleteExpiredShares(ctx context.Context) error {
 	if _, err := s.db.Exec(ctx, "DELETE FROM shares WHERE expires_at <= now()"); err != nil {
 		return err
@@ -625,7 +639,10 @@ func (s *PgStore) ReleaseUpload(ctx context.Context, id int64, writer string, ke
 }
 
 func (s *PgStore) DeleteUpload(ctx context.Context, id int64) error {
-	_, err := s.db.Exec(ctx, "DELETE FROM uploads WHERE id = $1", id)
+	tag, err := s.db.Exec(ctx, "DELETE FROM uploads WHERE id = $1", id)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = ErrNotFound
+	}
 	return err
 }
 

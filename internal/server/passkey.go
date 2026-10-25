@@ -37,8 +37,12 @@ type passkeyRequest struct {
 	Credential json.RawMessage `json:"credential"`
 }
 
-// siteOf is where the visitor of c makes and uses passkeys.
-func siteOf(c fiber.Ctx) auth.Site { return auth.Site{Host: c.Hostname(), Origin: c.BaseURL()} }
+// siteOf is where the visitor of c makes and uses passkeys. It is kept
+// past the request, so the host name is copied out of its buffer, which
+// the next request on the connection reuses.
+func siteOf(c fiber.Ctx) auth.Site {
+	return auth.Site{Host: strings.Clone(c.Hostname()), Origin: strings.Clone(c.BaseURL())}
+}
 
 // readJSON reads a small JSON body into v.
 func (s *Server) readJSON(c fiber.Ctx, v any) error {

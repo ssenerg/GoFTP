@@ -156,3 +156,29 @@ func TestLinkMaxSize(t *testing.T) {
 		t.Errorf("into a full home: %d", resp.StatusCode)
 	}
 }
+
+// Folders count against a home's quota too: empty, they could otherwise be
+// made without end.
+func TestHomeQuotaFolders(t *testing.T) {
+	ta := newTestAuth(t)
+	f := newFixtureWith(t, ta, withHomes, func(cfg *config.Config) { cfg.Homes.Quota = 3 * folderBytes })
+	dora := f.signedIn(ta.addUser(t, "dora", "user"))
+	for _, name := range []string{"a", "b", "c"} {
+		resp, _ := post(t, dora, "/home/dora/", "folder="+name)
+		expectStatus(t, resp, http.StatusCreated)
+	}
+	if resp, body := post(t, dora, "/home/dora/", "folder=d"); resp.StatusCode != http.StatusInsufficientStorage || !strings.Contains(body, "no room for it in this home") {
+		t.Errorf("one too many: %d %s", resp.StatusCode, body)
+	}
+	// Counted again, they still count; copies of them take room too.
+	f.srv.recountAll()
+	if used, _, _, err := f.srv.homeUsage("dora"); err != nil || used != 3*folderBytes {
+		t.Errorf("counted: %d, %v", used, err)
+	}
+	if resp, _ := post(t, dora, "/home/dora/", "copy=a&into=/home/dora/b"); resp.StatusCode != http.StatusInsufficientStorage {
+		t.Errorf("a copy: %d", resp.StatusCode)
+	}
+	if exists(filepath.Join(f.dir, "home", "dora", "b", "a")) || len(leftovers(filepath.Join(f.dir, "home", "dora", "b"))) != 0 {
+		t.Error("copied anyway")
+	}
+}

@@ -699,17 +699,19 @@ func (s *Server) replacing(c fiber.Ctx, dst string, isDir bool, do func() error)
 	if err != nil {
 		return err
 	}
-	// The shares of a folder stay with it, wherever it ends up.
+	// The shares of a folder stay with it, wherever it ends up. Those of
+	// a file stay with its name, as when it is uploaded again: apps save
+	// that way.
 	asidePath := path.Join(realDir, aside)
 	if isDir {
-		s.foldersMoved(realPath, asidePath)
-		defer s.foldersMoved(asidePath, "")
+		s.sharesMoved(realPath, asidePath, true)
+		defer s.sharesMoved(asidePath, "", true)
 	}
 	if err := do(); err != nil {
 		perr := renameNoReplace(dir, aside, name, info)
 		switch {
 		case perr == nil && isDir:
-			s.foldersMoved(asidePath, realPath)
+			s.sharesMoved(asidePath, realPath, true)
 		case perr != nil:
 			// Something took the name meanwhile.
 			if _, terr := s.toTrash(c, dir, aside, realPath, info); terr != nil {

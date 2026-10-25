@@ -129,7 +129,7 @@ func TestPasskeySignIn(t *testing.T) {
 	}
 
 	// With two-factor sign-in, no code after it.
-	_, _, dora = setUpTwoFactor(t, dora)
+	_, _, dora = setUpTwoFactor(t, dora, "dora")
 	if resp, _ := passkeySignIn(t, f, a, cred, "/"); resp.StatusCode != http.StatusOK {
 		t.Errorf("with two-factor sign-in: %d", resp.StatusCode)
 	}

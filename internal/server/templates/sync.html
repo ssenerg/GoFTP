@@ -40,8 +40,12 @@
     <h2>New app password</h2>
     <form method="post" action="/.sync/" class="inline-form">
       <input type="hidden" name="action" value="create">
+      <input type="hidden" name="username" value="{{.Username}}" autocomplete="username">
       <label class="field"><span>For</span>
         <input name="name" required maxlength="64" placeholder="e.g. rclone on my laptop" autocomplete="off">
+      </label>
+      <label class="field"><span>Your password</span>
+        <span class="pw"><input type="password" name="password" autocomplete="current-password" required></span>
       </label>
       <button type="submit" class="btn primary">Create</button>
     </form>

@@ -819,7 +819,7 @@ func (s *Server) wrapHandler(next fasthttp.RequestHandler) fasthttp.RequestHandl
 			s.writeAccess(access{
 				ip:     ctx.RemoteIP().String(),
 				method: string(ctx.Method()),
-				path:   string(ctx.URI().PathOriginal()),
+				path:   logPath(string(ctx.URI().PathOriginal())),
 				status: ctx.Response.StatusCode(),
 				start:  ctx.Time(),
 			}, int64(len(ctx.Response.Body())), nil)

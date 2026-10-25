@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -30,12 +31,17 @@ const maxAppPasswordName = 64
 // 120 bits of it; it is shown in groups of four, which may be left out.
 const appPasswordLength = 24
 
-// CreateAppPassword makes an app password named name for u, and returns it:
-// it is not kept, so it can only be shown now.
-func (s *Service) CreateAppPassword(ctx context.Context, u *User, name string) (string, *AppPassword, error) {
+// CreateAppPassword makes an app password named name for u, after checking
+// their password, and returns it: it is not kept, so it can only be shown
+// now. The password keeps a stolen session from becoming an app password,
+// which would outlive it.
+func (s *Service) CreateAppPassword(ctx context.Context, u *User, name, password string) (string, *AppPassword, error) {
 	name = strings.TrimSpace(name)
 	if name == "" || utf8.RuneCountInString(name) > maxAppPasswordName || strings.ContainsFunc(name, unicode.IsControl) {
 		return "", nil, fmt.Errorf("%w: name it in up to %d characters", ErrInvalid, maxAppPasswordName)
+	}
+	if err := s.checkPasswordOf(ctx, u, password); err != nil {
+		return "", nil, err
 	}
 	raw := strings.ToLower(rand.Text()[:appPasswordLength])
 	var groups []string
@@ -43,7 +49,12 @@ func (s *Service) CreateAppPassword(ctx context.Context, u *User, name string) (
 		groups = append(groups, raw[i:i+4])
 	}
 	ap := &AppPassword{UserID: u.ID, Name: name}
-	if err := s.store.CreateAppPassword(ctx, tokenHash(raw), ap); err != nil {
+	err := s.store.CreateAppPassword(ctx, tokenHash(raw), ap, u.PasswordHash)
+	if errors.Is(err, ErrNotFound) {
+		// The password changed meanwhile, ending what it made.
+		return "", nil, errChangedMeanwhile
+	}
+	if err != nil {
 		return "", nil, err
 	}
 	return strings.Join(groups, "-"), ap, nil

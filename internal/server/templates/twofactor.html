@@ -74,8 +74,12 @@
   <section class="card admin-form">
     <h2>Turn on</h2>
     <p>Signing in will then take, after your password, a 6-digit code from an authenticator app on your phone, which changes every 30 seconds: a stolen password alone will not do. Sync apps keep signing in with their app passwords.</p>
-    <form method="post" action="/.auth/two-factor">
+    <form method="post" action="/.auth/two-factor" class="inline-form">
       <input type="hidden" name="action" value="start">
+      <input type="hidden" name="username" value="{{.User}}" autocomplete="username">
+      <label class="field"><span>Your password</span>
+        <span class="pw"><input type="password" name="password" autocomplete="current-password" required></span>
+      </label>
       <button type="submit" class="btn primary">Set up</button>
     </form>
   </section>

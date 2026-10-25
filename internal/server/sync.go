@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"go.uber.org/zap"
@@ -81,10 +82,11 @@ func (s *Server) renderSync(c fiber.Ctx, status int, notice, failure string, cre
 
 // syncAction makes and revokes app passwords:
 //
-//	action=create&name=NAME  a new app password for the app NAME, shown once
-//	action=revoke&id=ID      ends the app password ID
+//	action=create&name=NAME&password=PW  a new app password for the app
+//	                                     NAME, shown once
+//	action=revoke&id=ID                  ends the app password ID
 //
-// e.g. curl -H "Authorization: Bearer $TOKEN" -d action=create -d name=rclone https://host/.sync/
+// e.g. curl -H "Authorization: Bearer $TOKEN" -d action=create -d name=rclone -d password=... https://host/.sync/
 func (s *Server) syncAction(c fiber.Ctx) error {
 	u := userOf(c)
 	if u == nil {
@@ -99,16 +101,32 @@ func (s *Server) syncAction(c fiber.Ctx) error {
 	defer cancel()
 	switch form["action"] {
 	case "create":
-		password, ap, err := s.auth.CreateAppPassword(ctx, u, form["name"])
+		check, wait := s.checkPassword(c, u.Username)
+		if wait > 0 {
+			retryAfter(c, wait)
+			return s.syncFailure(c, html, explain(fiber.ErrTooManyRequests, tooMany))
+		}
+		password, ap, err := s.auth.CreateAppPassword(ctx, u, form["name"], form["password"])
 		switch {
 		case errors.Is(err, auth.ErrInvalid):
+			check.refund()
 			return s.syncFailure(c, html, explain(fiber.ErrBadRequest, "Name the app password, in up to 64 characters, e.g. rclone on my laptop."))
+		case errors.Is(err, auth.ErrInvalidCredentials):
+			s.log.Warn("app password refused: wrong password", zap.String("ip", c.IP()), zap.String("user", u.Username))
+			return s.syncFailure(c, html, explain(fiber.ErrForbidden, "The password is wrong."))
 		case errors.Is(err, auth.ErrTooMany):
+			check.succeeded()
 			return s.syncFailure(c, html, explain(fiber.ErrConflict,
 				"You have "+strconv.Itoa(auth.MaxAppPasswords)+" app passwords already: revoke one you no longer use first."))
+		case errors.Is(err, auth.ErrBusy):
+			check.refund()
+			retryAfter(c, time.Second)
+			return s.syncFailure(c, html, explain(fiber.ErrServiceUnavailable, busy))
 		case err != nil:
+			check.refund()
 			return err
 		}
+		check.succeeded()
 		s.log.Info("app password created", zap.String("ip", c.IP()), zap.String("user", u.Username), zap.Int64("app", ap.ID),
 			zap.String("name", ap.Name))
 		c.Set(fiber.HeaderCacheControl, "no-store")

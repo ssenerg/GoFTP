@@ -57,7 +57,8 @@ The port is only published on 127.0.0.1: put a TLS-terminating reverse
 proxy in front and set `GOFTP_PROXY_HEADER=X-Forwarded-For` and
 `GOFTP_TRUSTED_PROXIES` in `.env` (see [`.env.example`](.env.example)), or
 let goftp serve HTTPS itself with `GOFTP_TLS_DIR`, `GOFTP_TLS_CERT` and
-`GOFTP_TLS_KEY`, then set `GOFTP_BIND=0.0.0.0`.
+`GOFTP_TLS_KEY`, then set `GOFTP_BIND=0.0.0.0`. Docker keeps the last
+50 MB of each container's log.
 
 ## Users and roles
 
@@ -108,13 +109,16 @@ to turn it on. That signs them out everywhere else, and shows 10 recovery
 codes once, each of which works once instead of a code, for a lost phone;
 new ones replace them, given the password. Codes are TOTP (RFC 6238: 6
 digits, 30 seconds, SHA-1, as apps expect), accepted 30 seconds early or
-late, and none works twice. Turning it off takes the password too. Wrong
-codes count against the client's sign-in budget, and a sign-in waits for
-its code 5 minutes, 5 tries at most. For someone who lost both, a superadmin
-turns it off under **Users** (marked *two-factor*), or with
-`goftp user two-factor-off NAME`. App passwords still sign apps in over
-WebDAV without a code: they are made by a user already signed in, for one
-app each, and are revoked alone.
+late, and none works twice. Setting it up and turning it off take the
+password too, so that a stolen session cannot lock its user out. Wrong
+codes count against the client's sign-in budget, and against the user's
+wherever they come from: after 5 in a row, the next waits a minute, then
+twice as long after each wrong one, up to a day, until one is right. A
+sign-in waits for its code 5 minutes, 5 tries at most. For someone who lost
+both, a superadmin turns it off under **Users** (marked *two-factor*), or
+with `goftp user two-factor-off NAME`. App passwords still sign apps in
+over WebDAV without a code: they are made by a user already signed in,
+with their password, for one app each, and are revoked alone.
 
 | Role         | May                                                                                     |
 |--------------|-----------------------------------------------------------------------------------------|
@@ -189,8 +193,9 @@ A home may hold up to a quota: `homes.quota` (`GOFTP_HOMES_QUOTA`, e.g.
 its user, under **Users** or with `goftp user quota NAME 10GiB` (`none` for
 no limit, `default` for `homes.quota`). What its user deleted from it
 counts too while it is in the trash, so deleting makes room once the trash
-is emptied. Uploads, copies and moves that would go past it, also through
-upload links into the home, get `507 Insufficient Storage`. **My files**
+is emptied, and each folder counts 4 KiB, as it takes that much of most
+disks. Uploads, new folders, copies and moves that would go past it, also
+through upload links into the home, get `507 Insufficient Storage`. **My files**
 shows how much the home holds, with a bar when it has a quota.
 
 Deleting a user moves their home to the trash, and removes the rules for
@@ -267,8 +272,9 @@ With two-factor sign-in, add `"code"` (from the app, or a recovery code).
 Without it, the answer is `401` with
 `{"two_factor":true,"challenge":"..."}`; send
 `{"challenge":"...","code":"..."}` within 5 minutes instead of the
-password. Scripts turn it on with `action=start` (which answers with the
-`secret` and `otpauth://` `uri` for the app) and then `action=confirm`
+password. Scripts turn it on with `action=start` and `password` (which
+answers with the `secret` and `otpauth://` `uri` for the app) and then
+`action=confirm`
 with `code` (answering with the `recovery_codes` and a new `token`), and
 off with `action=off` and `password`, all on `POST /.auth/two-factor`.
 
@@ -295,7 +301,9 @@ token. `POST /.auth/logout` ends the session. Sessions last
 The target directory must exist, and `upload.max_size` caps each file.
 Uploads stop short of the disk's last `upload.min_free` bytes
 (`GOFTP_UPLOAD_MIN_FREE`; 1 GiB by default, `0` turns the check off), which stay for the database and
-everything else on that disk: the upload gets `507 Insufficient Storage`.
+everything else on that disk, and of the last 1% of its inodes, where it
+counts them, which every file and folder takes: the upload, or the new
+folder, gets `507 Insufficient Storage`.
 Users who may upload new files into a folder (`write`) can also create
 folders in it, with the "New folder" button or
 `curl -d folder=photos -H "Authorization: Bearer $TOKEN" https://host/dir/`.
@@ -460,8 +468,11 @@ length when it starts, so one that does not fit is refused before it is
 sent. **Shared** shows how much was sent through each.
 
 A link never gives more than its creator may still read and share: it
-stops working when they lose those rights, or when what it leads to is
-moved or deleted. **Shared**, next to **Files** in the top bar, lists your
+stops working when they lose those rights. It follows what it leads to
+when that is renamed or moved, and ends when that is deleted, even if it
+is put back from the trash, so that it never leads to something made in
+its place; a file uploaded again keeps its links. **Shared**, next to
+**Files** in the top bar, lists your
 links, and for superadmins everyone's, with how often each was used and
 when it was last opened, to revoke them. Deleting a user, or giving them a
 new temporary password, ends their links too. Scripts:
@@ -487,13 +498,14 @@ address (your home, if you have one) and makes app passwords.
 
 Apps sign in with your username and an **app password**, never your own
 password: make one for each app or device, so that you can revoke one
-without the others. It is shown once (only a hash is stored), may be typed
+without the others. Making one takes your password, so that a stolen
+session cannot become an app password. It is shown once (only a hash is stored), may be typed
 without its dashes, and stops working when revoked, when you change your
 password, or when you are given a new temporary one. Each user may have
 20. Scripts:
 
 ```sh
-curl -H "Authorization: Bearer $TOKEN" -d action=create -d name=laptop https://host/.sync/
+curl -H "Authorization: Bearer $TOKEN" -d action=create -d name=laptop --data-urlencode password=... https://host/.sync/
 # {"id":1,"name":"laptop","username":"bob","password":"abcd-efgh-...","url":"https://host/.dav/"}
 curl -H "Authorization: Bearer $TOKEN" -d action=revoke -d id=1 https://host/.sync/
 ```
@@ -586,9 +598,9 @@ Wrong app passwords count against the client's sign-in budget
   with someone. A superadmin can still change the rules, and whoever runs
   the server can read its files.
 - Sharing a folder with people tells whether a username exists, to any
-  user with a home. A folder deleted by other means than goftp (on the
-  server's disk, say) keeps its shares, for a folder made in its place,
-  until its owner stops them.
+  user with a home. A file or folder deleted by other means than goftp
+  (on the server's disk, say) keeps its links and shares, for one made in
+  its place, until they are revoked.
 - Upload links let whoever has them fill a folder, with files of up to
   `upload.max_size` each, until the disk is down to `upload.min_free`:
   give them a short life, a password, a limit of files or of size. Into a

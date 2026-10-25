@@ -168,9 +168,7 @@ func (s *Server) moveEntry(c fiber.Ctx, dirPath, name, dest, newName string, rep
 	}
 	syncDir(dir)
 	syncDir(to)
-	if info.IsDir() {
-		s.foldersMoved(realSrc, path.Join(realTo, newName))
-	}
+	s.sharesMoved(realSrc, path.Join(realTo, newName), info.IsDir())
 	if toHome != fromHome {
 		s.recount(fromHome)
 		s.recount(toHome)
@@ -358,6 +356,9 @@ func (s *Server) copyFolder(dst *os.Root, name, urlPath, realPath, dstPath, real
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return 0, err
 	}
+	if err := s.folderRoom(dst); err != nil {
+		return 0, err
+	}
 	if err := dst.Mkdir(tmp, 0o755); err != nil {
 		return 0, err
 	}
@@ -421,6 +422,9 @@ func (s *Server) copyTree(dst *os.Root, urlPath, realPath, dstPath, realDst stri
 		}
 		var sub *os.Root
 		if dst != nil {
+			if err := s.folderRoom(dst); err != nil {
+				return n, err
+			}
 			if err := dst.Mkdir(it.Name, 0o755); errors.Is(err, fs.ErrExist) {
 				return n, errExists
 			} else if err != nil {

@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"os"
@@ -357,5 +358,67 @@ func TestLinkUploadNames(t *testing.T) {
 	}
 	if len(entries) != 101 || random != 1 {
 		t.Errorf("%d entries, %d with a random number", len(entries), random)
+	}
+}
+
+// A link follows what it leads to when that is renamed or moved, and ends
+// when it is deleted: it must not lead to what takes its place.
+func TestLinkFollowsItsEntry(t *testing.T) {
+	f := newFixture(t)
+	f.write(t, "docs/a.txt", "alpha")
+	f.write(t, "docs/sub/b.txt", "beta")
+	f.write(t, "docs/d.txt", "one")
+	f.write(t, "archive/.keep", "")
+	admin, anon := f.as("admin"), f.as("")
+	file, fileInfo := createLink(t, admin, url.Values{"path": {"/docs/a.txt"}})
+	folder, folderInfo := createLink(t, admin, url.Values{"path": {"/docs/sub"}})
+	other, otherInfo := createLink(t, admin, url.Values{"path": {"/docs/d.txt"}})
+	reads := func(p, want string) {
+		t.Helper()
+		if resp, body := anon.do(t, "GET", p); resp.StatusCode != http.StatusOK || body != want {
+			t.Errorf("%s: %d %q, want %q", p, resp.StatusCode, body, want)
+		}
+	}
+	gone := func(p string) {
+		t.Helper()
+		if resp, body := anon.do(t, "GET", p); resp.StatusCode == http.StatusOK || strings.Contains(body, "secret") {
+			t.Errorf("%s: %d %q", p, resp.StatusCode, body)
+		}
+	}
+
+	// Renamed and moved, with the folder it is in too.
+	resp, _ := post(t, admin, "/docs/", "rename=a.txt&to=c.txt")
+	expectStatus(t, resp, http.StatusCreated)
+	reads(file+"/c.txt", "alpha")
+	resp, _ = post(t, admin, "/docs/", "move=sub&into=/archive")
+	expectStatus(t, resp, http.StatusCreated)
+	reads(folder+"/b.txt", "beta")
+	resp, _ = post(t, admin, "/", "rename=docs&to=papers")
+	expectStatus(t, resp, http.StatusCreated)
+	reads(file+"/c.txt", "alpha")
+
+	// Uploaded again, a file keeps its link: apps save that way.
+	resp, _ = admin.send(t, "PUT", "/papers/d.txt", strings.NewReader("two"))
+	expectStatus(t, resp, http.StatusNoContent)
+	reads(other+"/d.txt", "two")
+
+	// Deleted, it ends, even once something else takes the name.
+	resp, _ = admin.do(t, "DELETE", "/papers/c.txt")
+	expectStatus(t, resp, http.StatusNoContent)
+	f.write(t, "papers/c.txt", "secret")
+	gone(file + "/c.txt")
+	resp, _ = admin.do(t, "DELETE", "/archive/sub")
+	expectStatus(t, resp, http.StatusNoContent)
+	f.write(t, "archive/sub/b.txt", "secret")
+	gone(folder + "/b.txt")
+	// And so do the links to what was in a folder deleted.
+	resp, _ = admin.do(t, "DELETE", "/papers")
+	expectStatus(t, resp, http.StatusNoContent)
+	f.write(t, "papers/d.txt", "secret")
+	gone(other + "/d.txt")
+	for _, info := range []map[string]any{fileInfo, folderInfo, otherInfo} {
+		if sh, err := f.auth.svc.ShareByID(t.Context(), int64(info["id"].(float64))); !errors.Is(err, auth.ErrNotFound) {
+			t.Errorf("a link left: %+v, %v", sh, err)
+		}
 	}
 }
