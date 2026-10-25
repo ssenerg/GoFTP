@@ -141,7 +141,11 @@ func (s *Server) sendError(c fiber.Ctx, err error, detail string) error {
 		s.log.Error("request failed", zap.String("path", logPath(c.Path())), zap.Error(err))
 	}
 	if code == fiber.StatusMethodNotAllowed {
-		c.Set(fiber.HeaderAllow, allowedMethods)
+		allow := allowedMethods
+		if inDav(c.Path()) {
+			allow = davAllow
+		}
+		c.Set(fiber.HeaderAllow, allow)
 	}
 	c.Set(fiber.HeaderXContentTypeOptions, "nosniff")
 	c.Set(fiber.HeaderCacheControl, "no-store")

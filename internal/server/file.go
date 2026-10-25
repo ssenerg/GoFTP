@@ -106,6 +106,34 @@ func etagOf(mod time.Time, size int64) string {
 	return `"` + strconv.FormatInt(mod.UnixNano(), 16) + "-" + strconv.FormatInt(size, 16) + `"`
 }
 
+// preconditionsHold evaluates If-Match and If-Unmodified-Since (RFC 9110,
+// section 13.1) for a request that changes the entry info, nil if there is
+// none: clients send them so as not to overwrite what changed since they
+// looked. If-Match compares the tags of etagOf, strongly.
+func preconditionsHold(c fiber.Ctx, info fs.FileInfo) bool {
+	if im := strings.TrimSpace(c.Get(fiber.HeaderIfMatch)); im != "" {
+		if info == nil {
+			return false
+		}
+		if im == "*" {
+			return true
+		}
+		etag := etagOf(info.ModTime(), info.Size())
+		for tag := range strings.SplitSeq(im, ",") {
+			if strings.TrimSpace(tag) == etag {
+				return true
+			}
+		}
+		return false
+	}
+	if ius := c.Get(fiber.HeaderIfUnmodifiedSince); ius != "" && info != nil {
+		if t, err := http.ParseTime(ius); err == nil && info.ModTime().Truncate(time.Second).After(t) {
+			return false
+		}
+	}
+	return true
+}
+
 // fromStart reports whether sending ranges, or the whole file if there are
 // none, sends the file's first byte.
 func fromStart(ranges []byteRange) bool {

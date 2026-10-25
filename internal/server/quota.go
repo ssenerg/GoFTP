@@ -206,8 +206,9 @@ func (s *Server) dirPath(dir *os.Root) (string, bool) {
 // writeGuard wraps w, which writes into the folder dir, to stop short of
 // the disk's last upload.min_free bytes (see spaceGuard) and of the quota
 // of the home dir is in, if any, where what is written replaces credit
-// bytes. With w nil, setWriter gives it its writer later: the home's usage
-// is read before the file is made.
+// bytes; what it writes counts as held there as it arrives. With w nil,
+// setWriter gives it its writer later: the home's usage is read before the
+// file is made.
 func (s *Server) writeGuard(dir *os.Root, w io.Writer, credit int64) (io.Writer, error) {
 	g := &guardWriter{w: w, space: s.spaceGuard(dir), credit: credit}
 	if name := s.homeAt(dir); name != "" {
@@ -215,9 +216,7 @@ func (s *Server) writeGuard(dir *os.Root, w io.Writer, credit int64) (io.Writer,
 		if err != nil {
 			return nil, err
 		}
-		if u.quota > 0 {
-			g.use = u
-		}
+		g.use = u
 		u.mu.Unlock()
 	}
 	return g, nil
@@ -226,10 +225,21 @@ func (s *Server) writeGuard(dir *os.Root, w io.Writer, credit int64) (io.Writer,
 // setWriter gives the writer of writeGuard where to write.
 func setWriter(g io.Writer, w io.Writer) { g.(*guardWriter).w = w }
 
+// replaced notes that what the writer of writeGuard wrote took the place of
+// its credit bytes, which its home no longer holds: counted as it goes, the
+// home need not be counted again.
+func replaced(g io.Writer) {
+	if g := g.(*guardWriter); g.use != nil {
+		g.use.mu.Lock()
+		g.use.used = max(g.use.used-g.credit, 0)
+		g.use.mu.Unlock()
+	}
+}
+
 type guardWriter struct {
 	w      io.Writer
 	space  *spaceWriter // nil without a floor of free space
-	use    *homeUse     // the home's usage, nil without a quota
+	use    *homeUse     // the home's usage, nil outside homes
 	credit int64        // bytes of the file it replaces, freed once it is in place
 }
 
@@ -266,6 +276,16 @@ func (s *Server) recount(name string) {
 		u := v.(*homeUse)
 		u.mu.Lock()
 		u.counted = time.Time{}
+		u.mu.Unlock()
+	}
+}
+
+// unuse takes n bytes, which left the home name, off what it holds.
+func (s *Server) unuse(name string, n int64) {
+	if v, ok := s.uses.Load(name); ok && name != "" && n > 0 {
+		u := v.(*homeUse)
+		u.mu.Lock()
+		u.used = max(u.used-n, 0)
 		u.mu.Unlock()
 	}
 }

@@ -50,6 +50,13 @@ var pages = template.Must(template.New("").Funcs(template.FuncMap{
 	"expiryOptions": func() []shareTTL { return shareTTLs },
 }).ParseFS(templateFS, "templates/*.html"))
 
+// shownTime is how pages show the time t: in UTC, to the minute, until
+// app.js shows it in the visitor's time, from isoTime's.
+func shownTime(t time.Time) string { return t.UTC().Format("Jan 2, 2006 15:04") + " UTC" }
+
+// isoTime is t for a <time datetime="...">.
+func isoTime(t time.Time) string { return t.UTC().Format(time.RFC3339) }
+
 // page holds what every page shows.
 type page struct {
 	Title     string
@@ -610,8 +617,8 @@ func (s *Server) listItem(dirPath, realDir string, e fs.DirEntry) (listItem, boo
 		Path:    path.Join(dirPath, name),
 		Key:     strings.ToLower(name),
 		Href:    escapePath(path.Join(dirPath, name)),
-		ModTime: mod.Format("Jan 2, 2006 15:04") + " UTC",
-		ModISO:  mod.Format(time.RFC3339),
+		ModTime: shownTime(mod),
+		ModISO:  isoTime(mod),
 		mod:     mod,
 		real:    real,
 	}

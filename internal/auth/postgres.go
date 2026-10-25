@@ -136,15 +136,26 @@ func (s *PgStore) DeleteAppPassword(ctx context.Context, userID, id int64) error
 }
 
 func (s *PgStore) AppPasswordUser(ctx context.Context, username string, tokenHash []byte) (*User, error) {
-	u, err := scanUser(s.db.QueryRow(ctx, `SELECT u.id, u.username, u.password_hash, u.must_change_password, u.created_at, u.home_quota
-		FROM app_passwords a JOIN users u ON u.id = a.user_id
-		WHERE a.token_hash = $1 AND u.username = $2`, tokenHash, username))
+	var (
+		u        User
+		lastUsed *time.Time
+	)
+	err := s.db.QueryRow(ctx, `SELECT u.id, u.username, u.password_hash, u.must_change_password, u.created_at, u.home_quota,
+		a.last_used_at FROM app_passwords a JOIN users u ON u.id = a.user_id WHERE a.token_hash = $1 AND u.username = $2`,
+		tokenHash, username).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.MustChangePassword, &u.CreatedAt, &u.HomeQuota, &lastUsed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
 	if err != nil {
 		return nil, err
 	}
-	_, err = s.db.Exec(ctx, `UPDATE app_passwords SET last_used_at = now()
-		WHERE token_hash = $1 AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')`, tokenHash)
-	return u, err
+	// Sync apps send many requests: only the first in a minute writes.
+	if lastUsed == nil || time.Since(*lastUsed) >= time.Minute {
+		if _, err := s.db.Exec(ctx, "UPDATE app_passwords SET last_used_at = now() WHERE token_hash = $1", tokenHash); err != nil {
+			return nil, err
+		}
+	}
+	return &u, nil
 }
 
 func (s *PgStore) SetHomeQuota(ctx context.Context, userID int64, quota *int64) error {

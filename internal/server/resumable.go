@@ -419,7 +419,14 @@ func (s *Server) completeUpload(c fiber.Ctx, dir *os.Root, up *auth.Upload, righ
 		}
 		created, err = checkTarget(dir, up.Name, up.Replace, rights)
 		if err == nil {
-			err = place(dir, up.Temp, up.Name, up.Replace, rights)
+			freed := int64(0)
+			if !created {
+				freed = sizeOf(dir, up.Name)
+			}
+			if err = place(dir, up.Temp, up.Name, up.Replace, rights); err == nil {
+				// What it replaced left the home.
+				s.unuse(s.homeAt(dir), freed)
+			}
 		}
 		release()
 	}

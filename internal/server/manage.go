@@ -338,8 +338,13 @@ func (s *Server) rename(c fiber.Ctx, dirPath, from, to string) error {
 	}
 
 	if from != to {
-		// The locks keep uploads of either name out meanwhile.
-		for _, name := range []string{from, to} {
+		// The locks keep uploads of either name out meanwhile; a name spelled
+		// anew, where the file system finds names in any case, has one.
+		names := []string{from}
+		if s.folded(from) != s.folded(to) {
+			names = append(names, to)
+		}
+		for _, name := range names {
 			release, err := s.acquireLock(dir, name, tempPrefix+rand.Text()+tempSuffix)
 			if err != nil {
 				return err
@@ -496,12 +501,9 @@ func (s *Server) visitorRules(c fiber.Ctx) allowFunc {
 	// until it can be moved away.
 	if err := s.claimHome(u); err != nil {
 		s.log.Error("claim home", zap.String("user", u.Username), zap.Error(err))
-		home, rules, fold := s.homeOf(u), allow, s.fold
-		if fold == nil {
-			fold = func(p string) string { return p }
-		}
+		home, rules := s.homeOf(u), allow
 		allow = func(obj, act string) (bool, error) {
-			if inHome(fold(home), fold(strings.TrimSuffix(obj, "/"))) != "" {
+			if inHome(s.folded(home), s.folded(strings.TrimSuffix(obj, "/"))) != "" {
 				return false, nil
 			}
 			return rules(obj, act)

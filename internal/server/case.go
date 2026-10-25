@@ -113,3 +113,12 @@ func swapCase(name string) string {
 		return r
 	}, name)
 }
+
+// folded is p as the file system compares names: as spelled, or folded as
+// checkNames found.
+func (s *Server) folded(p string) string {
+	if s.fold == nil {
+		return p
+	}
+	return s.fold(p)
+}

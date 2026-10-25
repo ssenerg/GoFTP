@@ -9,6 +9,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"io"
+	"io/fs"
 	"mime"
 	"net/http"
 	"net/url"
@@ -86,6 +87,9 @@ func (s *Server) dav(c fiber.Ctx) error {
 	}
 	return fiber.ErrMethodNotAllowed
 }
+
+// inDav reports whether the request path p is WebDAV's.
+func inDav(p string) bool { return p == davPrefix || strings.HasPrefix(p, davPrefix+"/") }
 
 // davPath returns the clean URL path that the request path p, under
 // davPrefix, stands for.
@@ -173,6 +177,10 @@ func (s *Server) davBody(c fiber.Ctx) ([]byte, error) {
 	return data, nil
 }
 
+// appleDoubleLimit bounds what is read of a file appleDouble names before
+// the connection is closed instead.
+const appleDoubleLimit = 64 << 20
+
 // appleDouble reports whether name is one of the files that macOS keeps
 // beside others, which goftp, hiding names that start with a dot, takes
 // and drops.
@@ -196,6 +204,8 @@ type davResource struct {
 	size int64
 	mod  time.Time
 	real string // URL path where it really lives; "" for the way to a home
+	// locks describes the locks on it (see lockDiscoveries).
+	locks string
 }
 
 // propfind is the body of a PROPFIND request: allprop, propname, or the
@@ -264,6 +274,7 @@ func (s *Server) davPropfind(c fiber.Ctx, urlPath string) error {
 		res = append(res, s.wayHome(next))
 	}
 
+	s.lockDiscoveries(res)
 	var b bytes.Buffer
 	b.WriteString(xml.Header + `<D:multistatus xmlns:D="DAV:">`)
 	for _, r := range res {
@@ -362,7 +373,7 @@ func (s *Server) davProp(c fiber.Ctx, r davResource, name xml.Name) (string, boo
 		v = "<D:lockentry><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockentry>" +
 			"<D:lockentry><D:lockscope><D:shared/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockentry>"
 	case "lockdiscovery":
-		v = s.lockDiscovery(r.path)
+		v = r.locks
 	case "quota-used-bytes", "quota-available-bytes":
 		used, avail, ok := s.davQuota(r)
 		if !ok || name.Local == "quota-used-bytes" && used < 0 {
@@ -452,7 +463,10 @@ func (s *Server) davGet(c fiber.Ctx, urlPath string) error {
 
 func (s *Server) davPut(c fiber.Ctx, urlPath string) error {
 	if appleDouble(path.Base(urlPath)) {
-		_, _ = s.davBody(c)
+		// Read to the end, so that the client is not cut off.
+		body := s.requestBody(c)
+		_, _ = io.CopyN(io.Discard, body, appleDoubleLimit)
+		s.finishBody(c, body)
 		return c.SendStatus(fiber.StatusCreated)
 	}
 	if urlPath == "/" {
@@ -474,9 +488,10 @@ func (s *Server) davPut(c fiber.Ctx, urlPath string) error {
 	}
 	if info, err := s.root.Stat(rootName(urlPath)); err == nil {
 		c.Set(fiber.HeaderETag, etagOf(info.ModTime(), info.Size()))
-	}
-	if keep {
-		c.Set("X-OC-Mtime", "accepted")
+		// Said only if kept, as far as the file system keeps times.
+		if keep && info.ModTime().Sub(mtime).Abs() < time.Second {
+			c.Set("X-OC-Mtime", "accepted")
+		}
 	}
 	if created {
 		return c.SendStatus(fiber.StatusCreated)
@@ -502,6 +517,9 @@ func (s *Server) davDelete(c fiber.Ctx, urlPath string) error {
 	dirPath, name := path.Split(urlPath)
 	if appleDouble(name) {
 		return c.SendStatus(fiber.StatusNoContent)
+	}
+	if err := s.davPreconditions(c, urlPath); err != nil {
+		return err
 	}
 	if _, err := s.remove(c, dirPath, name, false); err != nil {
 		return err
@@ -538,8 +556,10 @@ func (s *Server) davMkcol(c fiber.Ctx, urlPath string) error {
 }
 
 // davCopyMove copies or moves the entry at urlPath to the Destination
-// header's path, replacing what is there (into the trash) unless
-// "Overwrite: F" says not to.
+// header's path, replacing what is there unless "Overwrite: F" says not
+// to. A file replaces a file in one step; anything else is set aside until
+// it is replaced (see replacing), so that a failed MOVE or COPY loses
+// nothing.
 func (s *Server) davCopyMove(c fiber.Ctx, urlPath string, move bool) error {
 	dst, ok := davDestination(c.Get("Destination"))
 	switch {
@@ -547,9 +567,19 @@ func (s *Server) davCopyMove(c fiber.Ctx, urlPath string, move bool) error {
 		return explain(fiber.ErrBadRequest, "Say where it goes, in a Destination header under "+davPrefix+"/.")
 	case urlPath == "/" || dst == "/" || dst == urlPath || hidden(dst):
 		return fiber.ErrForbidden
-	case within(urlPath, dst) || within(dst, urlPath):
-		// Replacing a folder the entry is in would trash the entry too.
+	}
+	// Where the file system finds names in any case, a MOVE may spell a
+	// name anew; anything else to the same entry, or to or from what holds
+	// it, would replace the entry with itself.
+	respell := s.folded(dst) == s.folded(urlPath)
+	switch {
+	case respell && !move:
+		return fiber.ErrForbidden
+	case !respell && (within(s.folded(urlPath), s.folded(dst)) || within(s.folded(dst), s.folded(urlPath))):
 		return explain(fiber.ErrConflict, "An entry cannot go where it is, or into itself.")
+	}
+	if err := s.davPreconditions(c, urlPath); err != nil {
+		return err
 	}
 	overwrite := !strings.EqualFold(strings.TrimSpace(c.Get("Overwrite")), "F")
 	depth := c.Get("Depth")
@@ -562,43 +592,50 @@ func (s *Server) davCopyMove(c fiber.Ctx, urlPath string, move bool) error {
 	if info.IsDir() && depth != "" && depth != "infinity" && (move || depth != "0") {
 		return fiber.ErrBadRequest
 	}
-	replaced := false
-	if g, _, _, err := s.lookup(dst, allow); err == nil {
-		_ = g.Close()
-		if !overwrite {
-			return fiber.ErrPreconditionFailed
+	srcDir, srcName := path.Split(urlPath)
+	dstDir, dstName := path.Split(dst)
+	do := func(replace bool) error {
+		var err error
+		switch {
+		case move:
+			_, err = s.moveEntry(c, srcDir, srcName, path.Clean(dstDir), dstName, replace)
+		case info.IsDir() && depth == "0":
+			err = s.makeFolder(c, dstDir, dstName)
+		default:
+			_, err = s.copyEntry(c, srcDir, srcName, path.Clean(dstDir), dstName, replace)
 		}
-		// Checked before what is there goes to the trash, so that it does
-		// not go for nothing; the move or copy checks everything again.
-		may, err := s.mayEither(c, auth.ActWrite, dst)
-		if err == nil && may && move {
-			may, err = s.mayEither(c, auth.ActDelete, urlPath)
+		if statusOf(err) == fiber.StatusNotFound {
+			// The folder it would go into is missing.
+			return fiber.ErrConflict
 		}
-		if err != nil {
-			return err
+		return err
+	}
+	var existing fs.FileInfo
+	if !respell {
+		if g, gi, _, err := s.lookup(dst, allow); err == nil {
+			_ = g.Close()
+			existing = gi
+		}
+	}
+	switch {
+	case existing == nil:
+		err = do(false)
+	case !overwrite:
+		return fiber.ErrPreconditionFailed
+	case existing.Mode().IsRegular() && info.Mode().IsRegular():
+		err = do(true)
+	default:
+		// Checked before anything is set aside.
+		may, merr := s.mayEither(c, auth.ActWrite, dst)
+		if merr == nil && may && move {
+			may, merr = s.mayEither(c, auth.ActDelete, urlPath)
+		}
+		if merr != nil {
+			return merr
 		} else if !may {
 			return s.deny(c)
 		}
-		dir, name := path.Split(dst)
-		if _, err := s.remove(c, dir, name, false); err != nil {
-			return err
-		}
-		s.dropLocks(dst)
-		replaced = true
-	}
-	srcDir, srcName := path.Split(urlPath)
-	dstDir, dstName := path.Split(dst)
-	switch {
-	case move:
-		_, err = s.moveEntry(c, srcDir, srcName, path.Clean(dstDir), dstName)
-	case info.IsDir() && depth == "0":
-		err = s.makeFolder(c, dstDir, dstName)
-	default:
-		_, err = s.copyEntry(c, srcDir, srcName, path.Clean(dstDir), dstName)
-	}
-	if statusOf(err) == fiber.StatusNotFound {
-		// The folder it would go into is missing.
-		return fiber.ErrConflict
+		err = s.replacing(c, dst, existing.IsDir(), func() error { return do(false) })
 	}
 	if err != nil {
 		return err
@@ -606,10 +643,100 @@ func (s *Server) davCopyMove(c fiber.Ctx, urlPath string, move bool) error {
 	if move {
 		s.dropLocks(urlPath)
 	}
-	if replaced {
+	if existing != nil {
+		s.dropLocks(dst)
 		return c.SendStatus(fiber.StatusNoContent)
 	}
 	return c.SendStatus(fiber.StatusCreated)
+}
+
+// replacing runs do, which puts something in the place of the entry at
+// dst. The visitor needs the right to delete a folder there with all in
+// it, or to overwrite a file. The entry is set aside under a hidden name
+// first and put back if do fails. Once do succeeds, a file is gone, as one
+// a PUT replaces, and a folder goes to the trash, as one a DELETE removes.
+func (s *Server) replacing(c fiber.Ctx, dst string, isDir bool, do func() error) error {
+	dirPath, name := path.Split(dst)
+	act := auth.ActOverwrite
+	if isDir {
+		act = auth.ActDelete
+	}
+	dir, realDir, info, err := s.entry(c, dirPath, name, act)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	realPath := path.Join(realDir, name)
+	if info.IsDir() != isDir {
+		return explain(fiber.ErrConflict, name+" changed meanwhile: try again.")
+	}
+	if isDir {
+		_, err := s.checkTree(c, dir, name, dst, realPath, auth.ActDelete)
+		if err := s.treeError(err, "replace"); err != nil {
+			return err
+		}
+	}
+	aside := tempPrefix + rand.Text() + tempSuffix
+	release, err := s.acquireLock(dir, name, aside)
+	if err != nil {
+		return err
+	}
+	err = sameEntry(dir, name, info)
+	if err == nil {
+		if err = dir.Rename(name, aside); err != nil {
+			err = s.openError(err)
+		}
+	}
+	release()
+	if err != nil {
+		return err
+	}
+	if err := do(); err != nil {
+		if perr := renameNoReplace(dir, aside, name, info); perr != nil {
+			// Something took the name meanwhile.
+			if _, terr := s.toTrash(c, dir, aside, realPath, info); terr != nil {
+				s.log.Error("put back what a move or copy that failed was to replace", zap.String("path", dst),
+					zap.String("kept as", path.Join(realDir, aside)), zap.Error(perr))
+			}
+		}
+		return err
+	}
+	switch {
+	case isDir && s.cfg.Trash.Keep > 0:
+		_, err = s.toTrash(c, dir, aside, realPath, info)
+	case isDir:
+		err = dir.RemoveAll(aside)
+	default:
+		err = dir.Remove(aside)
+	}
+	if err != nil {
+		s.log.Error("remove what a move or copy replaced", zap.String("path", dst), zap.String("kept as", path.Join(realDir, aside)),
+			zap.Error(err))
+	}
+	syncDir(dir)
+	s.homeChanged(realPath)
+	return nil
+}
+
+// davPreconditions evaluates If-Match and If-Unmodified-Since for a change
+// of the entry at urlPath (412 if they fail): clients send them so as not
+// to change what changed since they looked.
+func (s *Server) davPreconditions(c fiber.Ctx, urlPath string) error {
+	if c.Get(fiber.HeaderIfMatch) == "" && c.Get(fiber.HeaderIfUnmodifiedSince) == "" {
+		return nil
+	}
+	var info fs.FileInfo
+	switch f, i, _, err := s.lookup(urlPath, s.visitorRules(c)); {
+	case err == nil:
+		_ = f.Close()
+		info = i
+	case statusOf(err) != fiber.StatusNotFound:
+		return err
+	}
+	if !preconditionsHold(c, info) {
+		return fiber.ErrPreconditionFailed
+	}
+	return nil
 }
 
 // davDestination returns the clean URL path that the Destination header h
@@ -663,12 +790,17 @@ func (s *Server) davProppatch(c fiber.Ctx, urlPath string) error {
 			return err
 		}
 		_ = f.Close()
+		if !preconditionsHold(c, info) {
+			return fiber.ErrPreconditionFailed
+		}
 		isDir, realPath = info.IsDir(), real
 		create, replace, err := s.uploadRightsAt(c, object(urlPath, isDir), object(realPath, isDir))
 		if err != nil {
 			return err
 		}
-		may = create || replace
+		// Changing a file takes the right to overwrite it, as replacing
+		// it does; a folder's time, the right to make it.
+		may = replace || isDir && create
 	}
 	var ok, forbidden, bad bytes.Buffer
 	var mtime time.Time
@@ -727,9 +859,10 @@ func davTime(v string) (time.Time, bool) {
 	return unixTime(v)
 }
 
-// davLock is an advisory WebDAV lock.
+// davLock is an advisory WebDAV lock of the user user.
 type davLock struct {
 	token, path, owner string
+	user               int64
 	exclusive, deep    bool // deep: it covers what is in the folder too
 	timeout            time.Duration
 	expires            time.Time
@@ -737,8 +870,15 @@ type davLock struct {
 
 const (
 	maxLockTimeout = time.Hour
-	maxLocks       = 10000
+	maxLocks       = 10000 // in all
+	maxLockOwner   = 1 << 10
 )
+
+// maxUserLocks bounds the locks of one user.
+var maxUserLocks = 1000
+
+// errLockConflict refuses a lock that another one keeps out.
+var errLockConflict = errors.New("a conflicting lock is held")
 
 // lockinfo is the body of a LOCK request.
 type lockinfo struct {
@@ -750,32 +890,25 @@ type lockinfo struct {
 	} `xml:"DAV: owner"`
 }
 
+// davLock takes a lock, or refreshes one the visitor holds. Rights and what
+// is there are checked before the locks are looked at, which only takes a
+// moment: that takes the file system.
 func (s *Server) davLock(c fiber.Ctx, urlPath string) error {
 	data, err := s.davBody(c)
 	if err != nil {
 		return err
 	}
-	timeout := lockTimeout(c.Get("Timeout"))
-	now := time.Now()
-	s.davMu.Lock()
-	defer s.davMu.Unlock()
-	for token, l := range s.davLocks {
-		if now.After(l.expires) {
-			delete(s.davLocks, token)
-		}
-	}
+	timeout, user := lockTimeout(c.Get("Timeout")), userOf(c).ID
 	if len(bytes.TrimSpace(data)) == 0 {
-		// A refresh of a lock the client holds.
-		l := s.davLocks[ifToken(c.Get("If"))]
-		if l == nil || !covers(l, urlPath) {
-			return fiber.ErrPreconditionFailed
-		}
-		l.timeout, l.expires = timeout, now.Add(timeout)
-		return s.sendLock(c, fiber.StatusOK, l)
+		return s.refreshLock(c, urlPath, user, timeout)
 	}
 	var req lockinfo
 	if err := xml.Unmarshal(data, &req); err != nil {
 		return fiber.ErrBadRequest
+	}
+	owner := strings.TrimSpace(cmp.Or(req.Owner.Href, req.Owner.Text))
+	if len(owner) > maxLockOwner {
+		return explain(fiber.ErrBadRequest, "Name the owner of a lock in up to 1 KiB.")
 	}
 	create, replace, err := s.uploadRights(c, urlPath)
 	if err != nil {
@@ -784,29 +917,91 @@ func (s *Server) davLock(c fiber.Ctx, urlPath string) error {
 	if !create && !replace {
 		return s.deny(c)
 	}
-	l := &davLock{path: urlPath, exclusive: req.Exclusive != nil, deep: c.Get("Depth") != "0", timeout: timeout,
-		expires: now.Add(timeout), owner: strings.TrimSpace(cmp.Or(req.Owner.Href, req.Owner.Text))}
-	for _, other := range s.davLocks {
-		if (other.exclusive || l.exclusive) && (covers(other, urlPath) || covers(l, other.path)) {
-			return davError(c, fiber.StatusLocked, "no-conflicting-lock")
+	exists := false
+	if f, _, _, err := s.lookup(urlPath, s.visitorRules(c)); err == nil {
+		_ = f.Close()
+		exists = true
+	}
+	now := time.Now()
+	l := &davLock{token: newLockToken(), path: urlPath, owner: owner, user: user, exclusive: req.Exclusive != nil,
+		deep: c.Get("Depth") != "0", timeout: timeout, expires: now.Add(timeout)}
+	shown, err := s.addLock(l, now)
+	if errors.Is(err, errLockConflict) {
+		return davError(c, fiber.StatusLocked, "no-conflicting-lock")
+	} else if err != nil {
+		return err
+	}
+	status := fiber.StatusOK
+	if !exists {
+		// A lock of a free name makes an empty file there (RFC 4918,
+		// section 7.3); macOS's files beside files are not kept.
+		if !appleDouble(path.Base(urlPath)) {
+			_, err := s.saveFile(c, urlPath, 0, time.Time{}, &requestBody{r: strings.NewReader("")}, false)
+			if err != nil && !errors.Is(err, fiber.ErrPreconditionFailed) {
+				s.removeLock(l.token)
+				return err
+			}
+		}
+		status = fiber.StatusCreated
+	}
+	c.Set("Lock-Token", "<"+l.token+">")
+	return sendLock(c, status, shown)
+}
+
+// addLock adds the lock l, unless another one keeps it out
+// (errLockConflict) or there are too many, and describes it.
+func (s *Server) addLock(l *davLock, now time.Time) (string, error) {
+	s.davMu.Lock()
+	defer s.davMu.Unlock()
+	mine := 0
+	for token, other := range s.davLocks {
+		switch {
+		case now.After(other.expires):
+			delete(s.davLocks, token)
+		case (other.exclusive || l.exclusive) && (covers(other, l.path) || covers(l, other.path)):
+			return "", errLockConflict
+		case other.user == l.user:
+			mine++
 		}
 	}
-	if len(s.davLocks) >= maxLocks {
-		return fiber.ErrServiceUnavailable
+	if len(s.davLocks) >= maxLocks || mine >= maxUserLocks {
+		return "", fiber.ErrServiceUnavailable
 	}
+	s.davLocks[l.token] = l
+	return activeLock(l), nil
+}
+
+// refreshLock gives the lock named by the If header, which the user holds,
+// a new timeout.
+func (s *Server) refreshLock(c fiber.Ctx, urlPath string, user int64, timeout time.Duration) error {
+	s.davMu.Lock()
+	l := s.davLocks[ifToken(c.Get("If"))]
+	switch {
+	case l == nil || !covers(l, urlPath) || time.Now().After(l.expires):
+		s.davMu.Unlock()
+		return fiber.ErrPreconditionFailed
+	case l.user != user:
+		s.davMu.Unlock()
+		return fiber.ErrForbidden
+	}
+	l.timeout, l.expires = timeout, time.Now().Add(timeout)
+	shown := activeLock(l)
+	s.davMu.Unlock()
+	return sendLock(c, fiber.StatusOK, shown)
+}
+
+func (s *Server) removeLock(token string) {
+	s.davMu.Lock()
+	defer s.davMu.Unlock()
+	delete(s.davLocks, token)
+}
+
+// newLockToken makes a lock token, a random UUID URN as RFC 4918 suggests.
+func newLockToken() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
 	h := hex.EncodeToString(b[:])
-	l.token = "opaquelocktoken:" + h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
-	s.davLocks[l.token] = l
-	c.Set("Lock-Token", "<"+l.token+">")
-	status := fiber.StatusOK
-	if f, _, _, err := s.lookup(urlPath, s.visitorRules(c)); err == nil {
-		_ = f.Close()
-	} else {
-		status = fiber.StatusCreated
-	}
-	return s.sendLock(c, status, l)
+	return "opaquelocktoken:" + h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
 }
 
 // covers reports whether the lock l covers the entry at urlPath.
@@ -837,12 +1032,14 @@ func ifToken(h string) string {
 	return "opaquelocktoken:" + token
 }
 
-func (s *Server) sendLock(c fiber.Ctx, status int, l *davLock) error {
+// sendLock answers a LOCK with the lock shown, as activeLock describes it.
+func sendLock(c fiber.Ctx, status int, shown string) error {
 	c.Set(fiber.HeaderContentType, "application/xml; charset=utf-8")
-	return c.Status(status).SendString(xml.Header + `<D:prop xmlns:D="DAV:"><D:lockdiscovery>` + activeLock(l) +
+	return c.Status(status).SendString(xml.Header + `<D:prop xmlns:D="DAV:"><D:lockdiscovery>` + shown +
 		"</D:lockdiscovery></D:prop>")
 }
 
+// activeLock describes the lock l, whose fields davMu guards.
 func activeLock(l *davLock) string {
 	scope, depth := "<D:shared/>", "0"
 	if l.exclusive {
@@ -860,27 +1057,37 @@ func activeLock(l *davLock) string {
 		l.token + "</D:href></D:locktoken><D:lockroot><D:href>" + xmlEscape(davHref(l.path, false)) + "</D:href></D:lockroot></D:activelock>"
 }
 
-// lockDiscovery describes the locks on the entry at urlPath.
-func (s *Server) lockDiscovery(urlPath string) string {
+// lockDiscoveries describes the locks on each of res, for their
+// lockdiscovery properties, looking at the locks once.
+func (s *Server) lockDiscoveries(res []davResource) {
 	s.davMu.Lock()
 	defer s.davMu.Unlock()
-	var b strings.Builder
+	if len(s.davLocks) == 0 {
+		return
+	}
+	at := make(map[string]int, len(res))
+	for i, r := range res {
+		at[r.path] = i
+	}
 	now := time.Now()
 	for _, l := range s.davLocks {
-		if l.path == urlPath && now.Before(l.expires) {
-			b.WriteString(activeLock(l))
+		if i, ok := at[l.path]; ok && now.Before(l.expires) {
+			res[i].locks += activeLock(l)
 		}
 	}
-	return b.String()
 }
 
+// davUnlock ends a lock the visitor holds.
 func (s *Server) davUnlock(c fiber.Ctx, urlPath string) error {
 	token := strings.Trim(strings.TrimSpace(c.Get("Lock-Token")), "<>")
 	s.davMu.Lock()
 	defer s.davMu.Unlock()
 	l := s.davLocks[token]
-	if l == nil || l.path != urlPath {
+	switch {
+	case l == nil || l.path != urlPath:
 		return davError(c, fiber.StatusConflict, "lock-token-matches-request-uri")
+	case l.user != userOf(c).ID:
+		return fiber.ErrForbidden
 	}
 	delete(s.davLocks, token)
 	return c.SendStatus(fiber.StatusNoContent)
