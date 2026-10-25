@@ -22,6 +22,17 @@ type User struct {
 	// HomeQuota is how much their home may hold, in bytes: nil for the
 	// server's default, 0 for no limit.
 	HomeQuota *int64
+	// TwoFactor is set when they sign in with a code too (see
+	// LoginWithCode).
+	TwoFactor bool
+}
+
+// TwoFactor is what is stored of a user's two-factor sign-in.
+type TwoFactor struct {
+	Secret        []byte // nil while it is off
+	Pending       []byte // a secret being set up, until a code of it comes; nil if none
+	Step          int64  // the last time step a code was used for
+	RecoveryCodes int    // how many are left
 }
 
 // Share is a link that lets people without an account read a file or
@@ -115,6 +126,27 @@ type Store interface {
 	// folder moved, and deletes a share of p with the same user, which a
 	// folder that is gone left (ErrNotFound if there is no share id).
 	MoveFolderShare(ctx context.Context, id int64, p string) error
+
+	// TwoFactor returns what is stored of userID's two-factor sign-in
+	// (ErrNotFound if there is no such user).
+	TwoFactor(ctx context.Context, userID int64) (*TwoFactor, error)
+	// SetTwoFactorPending keeps secret for userID until a code of it comes.
+	SetTwoFactorPending(ctx context.Context, userID int64, secret []byte) error
+	// EnableTwoFactor turns two-factor sign-in on for userID with secret,
+	// if it is still pending (ErrNotFound otherwise), noting step as used,
+	// with the recovery codes of hashes; all of the user's sessions end.
+	EnableTwoFactor(ctx context.Context, userID int64, secret []byte, step int64, hashes [][]byte) error
+	// DisableTwoFactor turns it off, and deletes the recovery codes.
+	DisableTwoFactor(ctx context.Context, userID int64) error
+	// UseTwoFactorStep notes that a code of step was used, and reports
+	// whether none of it or of a later step had been.
+	UseTwoFactorStep(ctx context.Context, userID, step int64) (bool, error)
+	// UseRecoveryCode deletes the recovery code of hash, and reports
+	// whether userID had it.
+	UseRecoveryCode(ctx context.Context, userID int64, hash []byte) (bool, error)
+	// SetRecoveryCodes replaces userID's recovery codes with those of
+	// hashes.
+	SetRecoveryCodes(ctx context.Context, userID int64, hashes [][]byte) error
 
 	// CreateSession starts a session for u, unless u was deleted or changed
 	// password since it was read (ErrNotFound). It may drop the user's

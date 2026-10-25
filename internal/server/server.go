@@ -161,6 +161,8 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 	s.app.Post(logoutPath, s.logout)
 	s.app.Get(passwordPath, s.passwordPage)
 	s.app.Post(passwordPath, s.changePassword)
+	s.app.Get(twoFactorPath, s.twoFactorPage)
+	s.app.Post(twoFactorPath, s.twoFactorAction)
 	s.app.Get(strings.TrimSuffix(adminPath, "/"), s.adminHome)
 	s.app.Get(adminPath, s.adminHome)
 	s.app.Get(usersPath, s.usersPage)

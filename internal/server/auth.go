@@ -346,6 +346,8 @@ type authPage struct {
 	Next     string
 	Username string
 	Forced   bool
+	// Challenge is set when signing in waits for a two-factor code.
+	Challenge string
 }
 
 func (s *Server) loginPage(c fiber.Ctx) error {
@@ -368,6 +370,9 @@ func (s *Server) login(c fiber.Ctx) error {
 		}
 		return s.render(c, status, "login", authPage{page: s.page(c, "Sign in"), Error: msg, Next: next, Username: form["username"]})
 	}
+	if form["challenge"] != "" {
+		return s.loginCode(c, form, isJSON, next)
+	}
 
 	check, wait := s.checkPassword(c, form["username"])
 	if wait > 0 {
@@ -376,8 +381,16 @@ func (s *Server) login(c fiber.Ctx) error {
 	}
 	ctx, cancel := dbContext(c)
 	defer cancel()
-	sess, err := s.auth.Login(ctx, form["username"], form["password"])
+	sess, err := s.auth.LoginWithCode(ctx, form["username"], form["password"], form["code"])
+	var needed *auth.CodeNeeded
 	switch {
+	case errors.As(err, &needed):
+		check.succeeded()
+		return s.askCode(c, isJSON, needed.Challenge, next)
+	case errors.Is(err, auth.ErrWrongCode):
+		// The password was right; the failure still counts.
+		s.log.Warn("login code wrong", zap.String("ip", c.IP()), zap.String("user", auth.NormalizeUsername(form["username"])))
+		return fail(fiber.StatusUnauthorized, "Wrong two-factor code.")
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		// A name that matches no user is not logged: it may be a password
 		// typed into the wrong field.
@@ -396,8 +409,14 @@ func (s *Server) login(c fiber.Ctx) error {
 		return err
 	}
 	check.succeeded()
-	s.log.Info("login", zap.String("ip", c.IP()), zap.String("user", sess.User.Username))
+	return s.signedIn(c, sess, isJSON, next)
+}
 
+// signedIn answers a sign-in that succeeded with sess: scripts get its
+// token, browsers its cookie and go on to next.
+func (s *Server) signedIn(c fiber.Ctx, sess *auth.Session, isJSON bool, next string) error {
+	s.log.Info("login", zap.String("ip", c.IP()), zap.String("user", sess.User.Username), zap.Bool("two_factor", sess.User.TwoFactor),
+		zap.Bool("recovery_code", sess.RecoveryCode))
 	if isJSON {
 		c.Set(fiber.HeaderCacheControl, "no-store")
 		return c.JSON(fiber.Map{
@@ -407,8 +426,12 @@ func (s *Server) login(c fiber.Ctx) error {
 		})
 	}
 	s.setCookie(c, sess)
-	if sess.User.MustChangePassword {
+	switch {
+	case sess.User.MustChangePassword:
 		next = passwordPath + "?next=" + url.QueryEscape(next)
+	case sess.RecoveryCode:
+		// Say how many are left.
+		next = twoFactorPath + "?recovered=1"
 	}
 	return s.redirect(c, next)
 }

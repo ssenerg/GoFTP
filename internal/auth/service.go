@@ -44,6 +44,8 @@ type Service struct {
 
 	homes atomic.Value // the folder of users' homes (see SetHomes)
 	fold  atomic.Value // how rules compare paths (see SetFold)
+
+	challenges challenges // sign-ins that wait for a two-factor code
 }
 
 func NewService(store Store, enforcer *casbin.SyncedEnforcer, sessionTTL time.Duration) *Service {
@@ -110,10 +112,18 @@ type Session struct {
 	Token   string
 	Expires time.Time
 	User    *User
+	// RecoveryCode is set when the user signed in with a recovery code.
+	RecoveryCode bool
 }
 
-// Login checks the credentials and starts a session.
+// Login checks the credentials and starts a session; for users with
+// two-factor sign-in, see LoginWithCode.
 func (s *Service) Login(ctx context.Context, username, password string) (*Session, error) {
+	return s.LoginWithCode(ctx, username, password, "")
+}
+
+// checkLogin checks the credentials and returns their user.
+func (s *Service) checkLogin(ctx context.Context, username, password string) (*User, error) {
 	username = NormalizeUsername(username)
 	if checkUsername(username) != nil {
 		return nil, ErrNoSuchUser
@@ -134,12 +144,7 @@ func (s *Service) Login(ctx context.Context, username, password string) (*Sessio
 	case !ok:
 		return nil, errWrongPassword
 	}
-	sess, err := s.newSession(ctx, u)
-	if errors.Is(err, ErrNotFound) {
-		// Changed (or the user was deleted) since it was checked.
-		return nil, errChangedMeanwhile
-	}
-	return sess, err
+	return u, nil
 }
 
 func (s *Service) newSession(ctx context.Context, u *User) (*Session, error) {

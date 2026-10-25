@@ -3,6 +3,21 @@
 <main class="auth-wrap">
   <a class="brand" href="/"><svg class="logo" aria-hidden="true"><use href="#i-logo"/></svg>goftp</a>
   <div class="card auth-card">
+    {{if .Challenge}}
+    <h1>Two-factor sign-in</h1>
+    <p>Enter the code your authenticator app shows for this site, or one of your recovery codes.</p>
+    <form method="post" action="/.auth/login" class="stack">
+      {{with .Error}}<div class="alert error" role="alert"><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>{{.}}</span></div>{{end}}
+      <input type="hidden" name="next" value="{{.Next}}">
+      <input type="hidden" name="challenge" value="{{.Challenge}}">
+      <label class="field"><span>Code</span>
+        <input name="code" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" maxlength="16" required autofocus>
+      </label>
+      <button type="submit" class="btn primary block">Sign in</button>
+    </form>
+  </div>
+  <p class="auth-note"><a href="/.auth/login?next={{.Next}}">Start over</a></p>
+  {{else}}
     <h1>Sign in</h1>
     <p>Welcome back. Sign in to browse and share files.</p>
     <form method="post" action="/.auth/login" class="stack">
@@ -19,6 +34,7 @@
     </form>
   </div>
   <p class="auth-note">No account yet? Ask your administrator to create one.</p>
+  {{end}}
 </main>
 {{template "icons"}}
 {{script}}

@@ -2,6 +2,7 @@
 package authtest
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"slices"
@@ -21,6 +22,14 @@ type Store struct {
 	uploads  map[string]*upload           // by token hash
 	apps     map[string]*auth.AppPassword // by token hash
 	folders  map[int64]*auth.FolderShare  // by ID
+	factors  map[int64]*twoFactor         // by user ID
+}
+
+// twoFactor is what is kept of a user's two-factor sign-in.
+type twoFactor struct {
+	secret, pending []byte
+	step            int64
+	codes           map[string]bool // recovery codes, by hash
 }
 
 type upload struct {
@@ -38,7 +47,8 @@ var _ auth.Store = (*Store)(nil)
 
 func NewStore() *Store {
 	return &Store{users: make(map[int64]*auth.User), sessions: make(map[string]session), shares: make(map[string]*auth.Share),
-		uploads: make(map[string]*upload), apps: make(map[string]*auth.AppPassword), folders: make(map[int64]*auth.FolderShare)}
+		uploads: make(map[string]*upload), apps: make(map[string]*auth.AppPassword), folders: make(map[int64]*auth.FolderShare),
+		factors: make(map[int64]*twoFactor)}
 }
 
 // NewService returns a service with an empty store and the default policy.
@@ -111,6 +121,110 @@ func (s *Store) SetPassword(_ context.Context, userID int64, passwordHash string
 	return nil
 }
 
+// factor returns the two-factor sign-in of userID, made if need be.
+func (s *Store) factor(userID int64) (*twoFactor, error) {
+	if _, ok := s.users[userID]; !ok {
+		return nil, auth.ErrNotFound
+	}
+	tf := s.factors[userID]
+	if tf == nil {
+		tf = &twoFactor{codes: map[string]bool{}}
+		s.factors[userID] = tf
+	}
+	return tf, nil
+}
+
+func (s *Store) TwoFactor(_ context.Context, userID int64) (*auth.TwoFactor, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tf, err := s.factor(userID)
+	if err != nil {
+		return nil, err
+	}
+	return &auth.TwoFactor{Secret: tf.secret, Pending: tf.pending, Step: tf.step, RecoveryCodes: len(tf.codes)}, nil
+}
+
+func (s *Store) SetTwoFactorPending(_ context.Context, userID int64, secret []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tf, err := s.factor(userID)
+	if err == nil {
+		tf.pending = secret
+	}
+	return err
+}
+
+func (s *Store) EnableTwoFactor(_ context.Context, userID int64, secret []byte, step int64, hashes [][]byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tf, err := s.factor(userID)
+	if err != nil {
+		return err
+	}
+	if tf.secret != nil || !bytes.Equal(tf.pending, secret) {
+		return auth.ErrNotFound
+	}
+	tf.secret, tf.pending, tf.step = secret, nil, step
+	s.users[userID].TwoFactor = true
+	s.deleteSessions(userID)
+	s.setCodes(tf, hashes)
+	return nil
+}
+
+func (s *Store) setCodes(tf *twoFactor, hashes [][]byte) {
+	tf.codes = map[string]bool{}
+	for _, h := range hashes {
+		tf.codes[string(h)] = true
+	}
+}
+
+func (s *Store) DisableTwoFactor(_ context.Context, userID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.factor(userID); err != nil {
+		return err
+	}
+	delete(s.factors, userID)
+	s.users[userID].TwoFactor = false
+	return nil
+}
+
+func (s *Store) UseTwoFactorStep(_ context.Context, userID, step int64) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tf, err := s.factor(userID)
+	if err != nil || tf.secret == nil || tf.step >= step {
+		return false, err
+	}
+	tf.step = step
+	return true, nil
+}
+
+func (s *Store) UseRecoveryCode(_ context.Context, userID int64, hash []byte) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tf, err := s.factor(userID)
+	if err != nil || !tf.codes[string(hash)] {
+		return false, err
+	}
+	delete(tf.codes, string(hash))
+	return true, nil
+}
+
+func (s *Store) SetRecoveryCodes(_ context.Context, userID int64, hashes [][]byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tf, err := s.factor(userID)
+	if err != nil {
+		return err
+	}
+	if tf.secret == nil {
+		return auth.ErrNotFound
+	}
+	s.setCodes(tf, hashes)
+	return nil
+}
+
 func (s *Store) SetHomeQuota(_ context.Context, userID int64, quota *int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -133,6 +247,7 @@ func (s *Store) DeleteUser(_ context.Context, userID int64) error {
 		return auth.ErrNotFound
 	}
 	delete(s.users, userID)
+	delete(s.factors, userID)
 	s.deleteSessions(userID)
 	s.deleteShares(userID)
 	s.deleteApps(userID)

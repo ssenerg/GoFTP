@@ -49,6 +49,7 @@ func TestUserCommands(t *testing.T) {
 		{"user", "add", "X Y"},
 		{"user", "role", "nobody", "admin"},
 		{"user", "passwd", "nobody"},
+		{"user", "two-factor-off", "nobody"},
 		{"user", "delete", "nobody"},
 		{"user", "add"},
 	} {
@@ -75,6 +76,9 @@ func TestUserCommands(t *testing.T) {
 		t.Errorf("user quota default: %q", out)
 	}
 
+	if out := mustRun(t, "user", "two-factor-off", "bob"); !strings.Contains(out, "two-factor sign-in was off for bob already") {
+		t.Errorf("user two-factor-off: %q", out)
+	}
 	mustRun(t, "user", "role", "bob", "admin")
 	out = mustRun(t, "user", "passwd", "bob")
 	if !tempPassword.MatchString(out) {
