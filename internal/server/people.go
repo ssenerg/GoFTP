@@ -34,7 +34,7 @@ type folderShareView struct {
 // folderShareTTLs are how long a folder may be shared, as the People
 // popover offers it; "" is until it is stopped.
 var folderShareTTLs = []shareTTL{
-	{"", "Until I stop it", 0, true},
+	{"", "No end date", 0, true},
 	{"1d", "1 day", 24 * time.Hour, false},
 	{"7d", "1 week", 7 * 24 * time.Hour, false},
 	{"30d", "1 month", 30 * 24 * time.Hour, false},
