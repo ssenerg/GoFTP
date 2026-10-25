@@ -70,64 +70,118 @@ func (s *Server) put(c fiber.Ctx) error {
 	if err != nil || wantDir || urlPath == "/" {
 		return fiber.ErrBadRequest
 	}
-	if hidden(urlPath) {
-		return fiber.ErrForbidden
-	}
-	dirPath, name := path.Split(urlPath)
-	if !validName(name) {
-		return fiber.ErrBadRequest
-	}
-	create, replace, err := s.uploadRights(c, urlPath)
-	if err != nil {
-		return err
-	}
-	if !create && !replace {
-		return s.deny(c)
-	}
 	// A chunked body cut off between chunks looks complete; only a declared
 	// length lets truncated uploads be detected.
 	length := int64(c.Request().Header.ContentLength())
 	if length < 0 {
 		return fiber.ErrLengthRequired
 	}
-	if limit := int64(s.cfg.Upload.MaxSize); limit > 0 && length > limit {
-		return fiber.ErrRequestEntityTooLarge
-	}
-	dir, realDir, err := s.uploadDir(dirPath)
-	if errors.Is(err, fiber.ErrNotFound) {
-		return fiber.ErrConflict
-	}
+	created, err := s.putFile(c, urlPath, length, time.Time{})
 	if err != nil {
 		return err
 	}
-	defer dir.Close()
-	if create, replace, err = s.uploadRightsAt(c, urlPath, path.Join(realDir, name)); err != nil {
-		return err
-	} else if !create && !replace {
-		return s.deny(c)
-	}
-
-	if !s.roomFor(dir, length) {
-		return s.uploadError(nil, errLowSpace)
-	}
-	if err := s.homeRoom(s.homeAt(dir), length-sizeOf(dir, name)); err != nil {
-		return s.uploadError(nil, err)
-	}
-	body := s.requestBody(c)
-	rights := uploadRights{create: create, replace: replace}
-	created, size, err := s.receive(dir, name, body, c.Get(fiber.HeaderIfNoneMatch) != "*", rights)
-	if errors.Is(err, errExists) {
-		return fiber.ErrPreconditionFailed
-	}
-	if err != nil {
-		return s.uploadError(body, err)
-	}
-	s.logUpload(c, urlPath, size, created)
-	s.finishBody(c, body)
 	if created {
 		return c.SendStatus(fiber.StatusCreated)
 	}
 	return c.SendStatus(fiber.StatusNoContent)
+}
+
+// putFile stores the request body, length bytes of it, as the file at the
+// clean urlPath, and reports whether it created it. A body without a
+// declared length has to be exactly that long. A non-zero mtime becomes
+// the file's modification time.
+func (s *Server) putFile(c fiber.Ctx, urlPath string, length int64, mtime time.Time) (created bool, err error) {
+	// A part of a file would replace all of it (RFC 9110, section 14.5).
+	if c.Get(fiber.HeaderContentRange) != "" {
+		return false, explain(fiber.ErrBadRequest, "Send the whole file: parts of files cannot be uploaded with PUT.")
+	}
+	if hidden(urlPath) {
+		return false, fiber.ErrForbidden
+	}
+	dirPath, name := path.Split(urlPath)
+	if !validName(name) {
+		return false, fiber.ErrBadRequest
+	}
+	create, replace, err := s.uploadRights(c, urlPath)
+	if err != nil {
+		return false, err
+	}
+	if !create && !replace {
+		return false, s.deny(c)
+	}
+	if limit := int64(s.cfg.Upload.MaxSize); limit > 0 && length > limit {
+		return false, fiber.ErrRequestEntityTooLarge
+	}
+	dir, realDir, err := s.uploadDir(dirPath)
+	if errors.Is(err, fiber.ErrNotFound) {
+		return false, fiber.ErrConflict
+	}
+	if err != nil {
+		return false, err
+	}
+	defer dir.Close()
+	if create, replace, err = s.uploadRightsAt(c, urlPath, path.Join(realDir, name)); err != nil {
+		return false, err
+	} else if !create && !replace {
+		return false, s.deny(c)
+	}
+
+	if !s.roomFor(dir, length) {
+		return false, s.uploadError(nil, errLowSpace)
+	}
+	if err := s.homeRoom(s.homeAt(dir), length-sizeOf(dir, name)); err != nil {
+		return false, s.uploadError(nil, err)
+	}
+	body := s.requestBody(c)
+	var from io.Reader = body
+	if body.length < 0 {
+		from = &exactReader{r: body, left: length}
+	}
+	rights := uploadRights{create: create, replace: replace}
+	created, size, err := s.receive(dir, name, from, c.Get(fiber.HeaderIfNoneMatch) != "*", rights)
+	if errors.Is(err, errExists) {
+		return false, fiber.ErrPreconditionFailed
+	}
+	if err != nil {
+		return false, s.uploadError(body, err)
+	}
+	if !mtime.IsZero() {
+		_ = dir.Chtimes(name, time.Now(), mtime)
+	}
+	s.logUpload(c, urlPath, size, created)
+	s.finishBody(c, body)
+	return created, nil
+}
+
+// errLength refuses a body that is not as long as it was said to be.
+var errLength = errors.New("the body is not as long as was said")
+
+// exactReader reads left bytes of r, and fails if r ends before them or
+// goes on after them.
+type exactReader struct {
+	r    io.Reader
+	left int64
+}
+
+func (e *exactReader) Read(p []byte) (int, error) {
+	if e.left <= 0 {
+		var one [1]byte
+		if n, _ := e.r.Read(one[:]); n > 0 {
+			return 0, errLength
+		}
+		return 0, io.EOF
+	}
+	if int64(len(p)) > e.left {
+		p = p[:e.left]
+	}
+	n, err := e.r.Read(p)
+	e.left -= int64(n)
+	if errors.Is(err, io.EOF) && e.left > 0 {
+		err = errLength
+	} else if errors.Is(err, io.EOF) {
+		err = nil
+	}
+	return n, err
 }
 
 // postForm stores the files of a multipart/form-data upload (the listing
@@ -641,6 +695,8 @@ func (s *Server) uploadError(body *requestBody, err error) error {
 		return fiber.ErrRequestTimeout
 	case berr != nil:
 		return fiber.ErrBadRequest
+	case errors.Is(err, errLength):
+		return explain(fiber.ErrBadRequest, "The upload was not as long as it said it would be.")
 	case errors.Is(err, errQuota):
 		return explain(fiber.ErrInsufficientStorage, "There is no room for it in this home: delete something, and empty the trash, to make room.")
 	case errors.Is(err, syscall.ENOSPC):

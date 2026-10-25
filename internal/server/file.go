@@ -38,7 +38,7 @@ func (s *Server) serveFile(c fiber.Ctx, f *os.File, info fs.FileInfo, name strin
 func (s *Server) sendContent(c fiber.Ctx, f *os.File, info fs.FileInfo, name, ctype, inlinePolicy string, use func() error) error {
 	size := info.Size()
 	modTime := info.ModTime()
-	etag := `"` + strconv.FormatInt(modTime.UnixNano(), 16) + "-" + strconv.FormatInt(size, 16) + `"`
+	etag := etagOf(modTime, size)
 	unchanged := notModified(c.Get(fiber.HeaderIfNoneMatch), c.Get(fiber.HeaderIfModifiedSince), etag, modTime)
 	var (
 		ranges   []byteRange
@@ -99,6 +99,11 @@ func (s *Server) sendContent(c fiber.Ctx, f *os.File, info fs.FileInfo, name, ct
 		c.Set(fiber.HeaderContentType, "multipart/byteranges; boundary="+boundary)
 		return sendStream(c, fiber.StatusPartialContent, body, length)
 	}
+}
+
+// etagOf is the entity tag of a file modified at mod, size bytes long.
+func etagOf(mod time.Time, size int64) string {
+	return `"` + strconv.FormatInt(mod.UnixNano(), 16) + "-" + strconv.FormatInt(size, 16) + `"`
 }
 
 // fromStart reports whether sending ranges, or the whole file if there are

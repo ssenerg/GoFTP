@@ -73,12 +73,78 @@ func (s *PgStore) SetPassword(ctx context.Context, userID int64, passwordHash st
 		if tag.RowsAffected() == 0 {
 			return ErrNotFound
 		}
-		if _, err = tx.Exec(ctx, "DELETE FROM sessions WHERE user_id = $1", userID); err != nil || !mustChange {
+		if _, err = tx.Exec(ctx, "DELETE FROM sessions WHERE user_id = $1", userID); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, "DELETE FROM app_passwords WHERE user_id = $1", userID); err != nil || !mustChange {
 			return err
 		}
 		_, err = tx.Exec(ctx, "DELETE FROM shares WHERE created_by = $1", userID)
 		return err
 	})
+}
+
+func (s *PgStore) CreateAppPassword(ctx context.Context, tokenHash []byte, ap *AppPassword) error {
+	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		// The row lock serializes a user's app passwords, so they cannot
+		// exceed the limit together.
+		var id int64
+		err := tx.QueryRow(ctx, "SELECT id FROM users WHERE id = $1 FOR UPDATE", ap.UserID).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		var n int
+		if err := tx.QueryRow(ctx, "SELECT count(*) FROM app_passwords WHERE user_id = $1", id).Scan(&n); err != nil {
+			return err
+		}
+		if n >= MaxAppPasswords {
+			return ErrTooMany
+		}
+		return tx.QueryRow(ctx, "INSERT INTO app_passwords (user_id, name, token_hash) VALUES ($1, $2, $3) RETURNING id, created_at",
+			id, ap.Name, tokenHash).Scan(&ap.ID, &ap.CreatedAt)
+	})
+}
+
+func (s *PgStore) AppPasswords(ctx context.Context, userID int64) ([]AppPassword, error) {
+	rows, err := s.db.Query(ctx, `SELECT id, user_id, name, created_at, last_used_at FROM app_passwords
+		WHERE user_id = $1 ORDER BY created_at DESC, id DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (AppPassword, error) {
+		var (
+			ap       AppPassword
+			lastUsed *time.Time
+		)
+		err := row.Scan(&ap.ID, &ap.UserID, &ap.Name, &ap.CreatedAt, &lastUsed)
+		if lastUsed != nil {
+			ap.LastUsedAt = *lastUsed
+		}
+		return ap, err
+	})
+}
+
+func (s *PgStore) DeleteAppPassword(ctx context.Context, userID, id int64) error {
+	tag, err := s.db.Exec(ctx, "DELETE FROM app_passwords WHERE id = $1 AND user_id = $2", id, userID)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = ErrNotFound
+	}
+	return err
+}
+
+func (s *PgStore) AppPasswordUser(ctx context.Context, username string, tokenHash []byte) (*User, error) {
+	u, err := scanUser(s.db.QueryRow(ctx, `SELECT u.id, u.username, u.password_hash, u.must_change_password, u.created_at, u.home_quota
+		FROM app_passwords a JOIN users u ON u.id = a.user_id
+		WHERE a.token_hash = $1 AND u.username = $2`, tokenHash, username))
+	if err != nil {
+		return nil, err
+	}
+	_, err = s.db.Exec(ctx, `UPDATE app_passwords SET last_used_at = now()
+		WHERE token_hash = $1 AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')`, tokenHash)
+	return u, err
 }
 
 func (s *PgStore) SetHomeQuota(ctx context.Context, userID int64, quota *int64) error {

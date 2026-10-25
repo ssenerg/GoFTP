@@ -20,6 +20,15 @@ const badFolderName = "Folder names cannot be empty or very long, start with a d
 // field "folder" (see manage), e.g. curl -d folder=photos https://host/dir/
 func (s *Server) mkdir(c fiber.Ctx, urlPath, name string) error {
 	name = strings.TrimSpace(name)
+	if err := s.makeFolder(c, urlPath, name); err != nil {
+		return err
+	}
+	return s.done(c, urlPath, fiber.StatusCreated, escapePath(path.Join(urlPath, name)+"/"), "created="+url.QueryEscape(name))
+}
+
+// makeFolder creates the folder name in the directory at urlPath: 409 if
+// something has that name, 404 if there is no such directory.
+func (s *Server) makeFolder(c fiber.Ctx, urlPath, name string) error {
 	if !validName(name) {
 		return explain(fiber.ErrBadRequest, badFolderName)
 	}
@@ -55,5 +64,5 @@ func (s *Server) mkdir(c fiber.Ctx, urlPath, name string) error {
 	syncDir(dir)
 
 	s.log.Info("mkdir", zap.String("ip", c.IP()), zap.String("user", visitor(c)), zap.String("path", target))
-	return s.done(c, urlPath, fiber.StatusCreated, escapePath(target+"/"), "created="+url.QueryEscape(name))
+	return nil
 }

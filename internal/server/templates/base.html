@@ -497,6 +497,18 @@
     user-select: all;
   }
   .onetime-note { font-size: 13px; opacity: 0.85; }
+  .app-cell { display: inline-flex; align-items: center; gap: 10px; font-weight: 500; overflow-wrap: anywhere; }
+  .app-cell .i { flex: none; color: var(--muted); }
+  .sync-details { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 10px 18px; align-items: baseline; margin: 0; font-size: 14px; }
+  .sync-details dt { font-size: 13px; font-weight: 600; color: var(--muted); }
+  .sync-details dd { margin: 0; overflow-wrap: anywhere; }
+  .sync-details dd.faint { grid-column: 2; margin-top: -6px; font-size: 13px; }
+  .sync-details .copyable code { background: var(--surface-2); font-size: 14px; letter-spacing: 0; overflow-wrap: anywhere; }
+  .sync-apps details { border-top: 1px solid var(--border); padding-top: 12px; }
+  .sync-apps summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+  .sync-apps details p { margin-top: 8px; font-size: 13.5px; color: var(--muted); }
+  .sync-apps pre { margin: 10px 0 0; padding: 12px 14px; overflow-x: auto; border-radius: var(--radius-sm); background: var(--surface-2); font-size: 13px; line-height: 1.6; }
+  .sync-notes { margin: 4px 0 0; padding: 12px 0 0 18px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; color: var(--muted); }
   .manage { display: flex; flex-direction: column; gap: 14px; max-width: 420px; padding: 18px; margin-bottom: 16px; }
   .manage h2 { display: flex; align-items: center; gap: 10px; font-size: 16px; overflow-wrap: anywhere; }
 
@@ -673,6 +685,9 @@
     .files .num { width: auto; }
     .dz-hint { display: none; }
     .auth-card { padding: 24px 20px; }
+    .sync-details { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+    .sync-details dt:not(:first-child) { margin-top: 8px; }
+    .sync-details dd.faint { grid-column: 1; margin-top: 0; }
   }
 </style>
 </head>
@@ -699,6 +714,7 @@
     <div class="menu-panel">
       <div class="menu-head">Signed in as <strong>{{.User}}</strong>{{with .Role}}<span class="role">{{.}}</span>{{end}}</div>
       {{if .Admin}}<a href="/.admin/users"><svg class="i" aria-hidden="true"><use href="#i-users"/></svg>Users and rules</a>{{end}}
+      <a href="/.sync/"><svg class="i" aria-hidden="true"><use href="#i-sync"/></svg>Sync</a>
       <a href="/.auth/password"><svg class="i" aria-hidden="true"><use href="#i-key"/></svg>Change password</a>
       <form method="post" action="/.auth/logout"><button type="submit"><svg class="i" aria-hidden="true"><use href="#i-logout"/></svg>Sign out</button></form>
     </div>
@@ -716,6 +732,7 @@
   <symbol id="i-logo" viewBox="0 0 32 32"><rect width="32" height="32" rx="9" fill="#4263eb"/><path d="M16 8v11m-5-5 5 5 5-5M10 24h12" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"/></symbol>
   <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-sync" viewBox="0 0 24 24"><path d="M20 11A8 8 0 0 0 5.6 6.4L4 8m0-4v4h4M4 13a8 8 0 0 0 14.4 4.6L20 16m0 4v-4h-4"/></symbol>
   <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 9.3-9.3m-3 3 3 3m-6 0 2 2"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>

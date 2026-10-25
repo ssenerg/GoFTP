@@ -470,7 +470,8 @@ func TestConditionalRequests(t *testing.T) {
 
 func TestMethodNotAllowed(t *testing.T) {
 	f := newFixture(t)
-	for _, method := range []string{"OPTIONS", "PATCH"} {
+	// WebDAV's methods too, outside /.dav/.
+	for _, method := range []string{"OPTIONS", "PATCH", "PROPFIND"} {
 		resp, _ := f.do(t, method, "/")
 		expectStatus(t, resp, 405)
 		if got := resp.Header.Get("Allow"); got != "GET, HEAD, PUT, POST, DELETE" {
@@ -478,7 +479,7 @@ func TestMethodNotAllowed(t *testing.T) {
 		}
 	}
 	// Methods unknown to Fiber.
-	resp, _ := f.do(t, "PROPFIND", "/")
+	resp, _ := f.do(t, "BREW", "/")
 	expectStatus(t, resp, http.StatusNotImplemented)
 }
 
@@ -490,7 +491,7 @@ func TestAccessLog(t *testing.T) {
 	f.do(t, "HEAD", "/a.txt")
 	f.as("").do(t, "GET", "/a.txt")
 	f.do(t, "PATCH", "/a.txt")
-	f.do(t, "PROPFIND", "/a.txt")
+	f.do(t, "BREW", "/a.txt")
 	f.do(t, "GET", "/missing")
 	f.do(t, "GET", "/")
 
@@ -503,7 +504,7 @@ func TestAccessLog(t *testing.T) {
 		"HEAD /a.txt 200 0",
 		"GET /a.txt 401 12",
 		"PATCH /a.txt 405 18",
-		"PROPFIND /a.txt 501 15",
+		"BREW /a.txt 501 15",
 		"GET /missing 404 9",
 	}
 	if len(got) != len(want)+1 || strings.Join(got[:len(want)], "|") != strings.Join(want, "|") {
@@ -511,7 +512,7 @@ func TestAccessLog(t *testing.T) {
 	}
 	// Anyone can send unknown methods: that is no server error.
 	for _, e := range f.logs.entries("request") {
-		if e["method"] == "PROPFIND" && e["level"] != "info" {
+		if e["method"] == "BREW" && e["level"] != "info" {
 			t.Errorf("unknown method logged at level %v", e["level"])
 		}
 	}
