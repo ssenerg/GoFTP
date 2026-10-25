@@ -27,7 +27,7 @@
     <h2 id="with-you-title">Shared with you</h2>
     <div class="card">
       <table class="files list-table">
-        <thead><tr><th>Folder</th><th>Owner</th><th>Access</th><th class="date">Since</th><th class="act"><span class="vh">Leave</span></th></tr></thead>
+        <thead><tr><th>Folder</th><th>Owner</th><th>Access</th><th>Until</th><th class="date">Since</th><th class="act"><span class="vh">Leave</span></th></tr></thead>
         <tbody>
           {{range .}}
           <tr>
@@ -37,6 +37,7 @@
             </span></td>
             <td><span class="who-cell"><span class="avatar" aria-hidden="true">{{initial .Owner}}</span><span>{{.Owner}}</span></span></td>
             <td><span class="cell-label">Access </span>{{if .Write}}Can edit{{else}}Can view{{end}}</td>
+            <td><span class="cell-label">Until </span>{{if .Until}}<time datetime="{{.UntilISO}}">{{.Until}}</time>{{else}}<span class="faint">no end date</span>{{end}}</td>
             <td class="date"><time datetime="{{.SinceISO}}">{{.Since}}</time></td>
             <td class="act">
               <details class="confirm">
@@ -107,7 +108,7 @@
     <div class="card">
       {{if .Folders}}
       <table class="files list-table">
-        <thead><tr><th>Folder</th>{{if .All}}<th>Owner</th>{{end}}<th>Shared with</th><th>Access</th><th class="date">Since</th><th class="act"><span class="vh">Stop sharing</span></th></tr></thead>
+        <thead><tr><th>Folder</th>{{if .All}}<th>Owner</th>{{end}}<th>Shared with</th><th>Access</th><th>Until</th><th class="date">Since</th><th class="act"><span class="vh">Stop sharing</span></th></tr></thead>
         <tbody>
           {{range .Folders}}
           <tr>
@@ -118,6 +119,7 @@
             {{if $.All}}<td><span class="cell-label">Owner </span>{{.Owner}}</td>{{end}}
             <td><span class="who-cell"><span class="avatar" aria-hidden="true">{{initial .User}}</span><span>{{.User}}</span></span></td>
             <td><span class="cell-label">Access </span>{{if .Write}}Can edit{{else}}Can view{{end}}</td>
+            <td><span class="cell-label">Until </span>{{if .Until}}<time datetime="{{.UntilISO}}">{{.Until}}</time>{{else}}<span class="faint">no end date</span>{{end}}</td>
             <td class="date"><time datetime="{{.SinceISO}}">{{.Since}}</time></td>
             <td class="act">
               <details class="confirm">

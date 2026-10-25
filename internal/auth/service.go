@@ -235,8 +235,8 @@ func (s *Service) Role(username string) string {
 	return strings.Join(roles, ",")
 }
 
-// PurgeExpired deletes expired sessions and share links periodically until
-// ctx ends.
+// PurgeExpired deletes expired sessions, share links and folder shares
+// periodically until ctx ends.
 func (s *Service) PurgeExpired(ctx context.Context, every time.Duration, log *zap.Logger) {
 	t := time.NewTicker(every)
 	defer t.Stop()
@@ -245,7 +245,7 @@ func (s *Service) PurgeExpired(ctx context.Context, every time.Duration, log *za
 			log.Warn("purge sessions", zap.Error(err))
 		}
 		if err := s.store.DeleteExpiredShares(ctx); err != nil && ctx.Err() == nil {
-			log.Warn("purge share links", zap.Error(err))
+			log.Warn("purge share links and folder shares", zap.Error(err))
 		}
 		select {
 		case <-ctx.Done():

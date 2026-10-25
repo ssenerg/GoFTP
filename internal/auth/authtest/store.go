@@ -265,11 +265,11 @@ func (s *Store) ShareFolder(_ context.Context, fs *auth.FolderShare) error {
 	n := 0
 	for _, other := range s.folders {
 		if other.Path == fs.Path && other.UserID == fs.UserID {
-			other.Write = fs.Write
+			other.Write, other.ExpiresAt = fs.Write, fs.ExpiresAt
 			fs.ID, fs.CreatedAt = other.ID, other.CreatedAt
 			return nil
 		}
-		if other.OwnerID == fs.OwnerID {
+		if other.OwnerID == fs.OwnerID && live(other) {
 			n++
 		}
 	}
@@ -286,12 +286,15 @@ func (s *Store) ShareFolder(_ context.Context, fs *auth.FolderShare) error {
 	return nil
 }
 
-// folderShares lists the folder shares keep picks, with the current names
-// of their users.
+// live reports whether fs has not expired.
+func live(fs *auth.FolderShare) bool { return fs.ExpiresAt.IsZero() || time.Now().Before(fs.ExpiresAt) }
+
+// folderShares lists the unexpired folder shares keep picks, with the
+// current names of their users.
 func (s *Store) folderShares(keep func(*auth.FolderShare) bool) []auth.FolderShare {
 	var out []auth.FolderShare
 	for _, fs := range s.folders {
-		if keep(fs) {
+		if live(fs) && keep(fs) {
 			c := *fs
 			c.Owner, c.User = s.users[fs.OwnerID].Username, s.users[fs.UserID].Username
 			out = append(out, c)
@@ -320,7 +323,7 @@ func (s *Store) DeleteFolderShare(_ context.Context, id, userID int64) (*auth.Fo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	fs, ok := s.folders[id]
-	if !ok || userID != 0 && fs.OwnerID != userID && fs.UserID != userID {
+	if !ok || !live(fs) || userID != 0 && fs.OwnerID != userID && fs.UserID != userID {
 		return nil, auth.ErrNotFound
 	}
 	delete(s.folders, id)
@@ -611,6 +614,11 @@ func (s *Store) DeleteExpiredShares(context.Context) error {
 	for k, sh := range s.shares {
 		if !time.Now().Before(sh.ExpiresAt) {
 			delete(s.shares, k)
+		}
+	}
+	for id, fs := range s.folders {
+		if !live(fs) {
+			delete(s.folders, id)
 		}
 	}
 	return nil

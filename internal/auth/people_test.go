@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"go.uber.org/zap"
 
 	"goftp/internal/auth"
 )
@@ -32,11 +35,11 @@ func TestFolderShares(t *testing.T) {
 			{"/home/dora/docs", "dora", auth.ErrInvalid}, // dora's already
 			{"/home/dora/docs", "nobody", auth.ErrNotFound},
 		} {
-			if _, err := svc.ShareFolder(ctx, dora, tc.path, tc.user, false); !errors.Is(err, tc.want) {
+			if _, err := svc.ShareFolder(ctx, dora, tc.path, tc.user, false, 0); !errors.Is(err, tc.want) {
 				t.Errorf("ShareFolder(%q, %q): %v", tc.path, tc.user, err)
 			}
 		}
-		fs, err := svc.ShareFolder(ctx, dora, "/home/dora/docs", "Erin", false)
+		fs, err := svc.ShareFolder(ctx, dora, "/home/dora/docs", "Erin", false, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -76,7 +79,7 @@ func TestFolderShares(t *testing.T) {
 		})
 
 		// Sharing it again changes how.
-		again, err := svc.ShareFolder(ctx, dora, "/home/dora/docs", "erin", true)
+		again, err := svc.ShareFolder(ctx, dora, "/home/dora/docs", "erin", true, 0)
 		if err != nil || again.ID != fs.ID || !again.Write {
 			t.Fatalf("shared again: %+v, %v", again, err)
 		}
@@ -136,10 +139,10 @@ func TestFolderShares(t *testing.T) {
 				t.Errorf("SharedWith(%s) = %v, want %v", u.Username, got, want)
 			}
 		}
-		if _, err := svc.ShareFolder(ctx, dora, "/home/dora/docs/team", "finn", false); err != nil {
+		if _, err := svc.ShareFolder(ctx, dora, "/home/dora/docs/team", "finn", false, 0); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := svc.ShareFolder(ctx, erin, "/home/erin", "dora", false); err != nil {
+		if _, err := svc.ShareFolder(ctx, erin, "/home/erin", "dora", false, 0); err != nil {
 			t.Fatal(err)
 		}
 		lists(dora, false, "dora:/home/dora/docs/team>finn", "dora:/home/dora/docs>erin")
@@ -176,7 +179,7 @@ func TestFolderShares(t *testing.T) {
 		// Unrelated moves leave them be; shares left where a folder moves to
 		// are of a folder that is gone.
 		for _, p := range []string{"/home/dora/p", "/home/dora/q", "/home/dora/qq"} {
-			if _, err := svc.ShareFolder(ctx, dora, p, "erin", false); err != nil {
+			if _, err := svc.ShareFolder(ctx, dora, p, "erin", false, 0); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -205,7 +208,7 @@ func TestFolderShares(t *testing.T) {
 		if _, err := svc.UnshareFolder(ctx, dora, q, false); !errors.Is(err, auth.ErrNotFound) {
 			t.Errorf("ended twice: %v", err)
 		}
-		fs, err = svc.ShareFolder(ctx, dora, "/home/dora", "finn", false)
+		fs, err = svc.ShareFolder(ctx, dora, "/home/dora", "finn", false, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -214,7 +217,7 @@ func TestFolderShares(t *testing.T) {
 		}
 
 		// Users' shares go with them.
-		if _, err := svc.ShareFolder(ctx, dora, "/home/dora/x", "erin", false); err != nil {
+		if _, err := svc.ShareFolder(ctx, dora, "/home/dora/x", "erin", false, 0); err != nil {
 			t.Fatal(err)
 		}
 		if err := svc.DeleteUser(ctx, "erin"); err != nil {
@@ -223,7 +226,7 @@ func TestFolderShares(t *testing.T) {
 		lists(dora, true)
 
 		// Homes that moved leave their shares behind.
-		if _, err := svc.ShareFolder(ctx, dora, "/home/dora/x", "finn", true); err != nil {
+		if _, err := svc.ShareFolder(ctx, dora, "/home/dora/x", "finn", true, 0); err != nil {
 			t.Fatal(err)
 		}
 		svc.SetHomes("/users")
@@ -245,15 +248,15 @@ func TestFolderShareLimit(t *testing.T) {
 		}
 		dora := userNamed(t, svc, "dora")
 		for i := range auth.MaxFolderShares {
-			if _, err := svc.ShareFolder(ctx, dora, fmt.Sprintf("/home/dora/%d", i), "erin", false); err != nil {
+			if _, err := svc.ShareFolder(ctx, dora, fmt.Sprintf("/home/dora/%d", i), "erin", false, 0); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if _, err := svc.ShareFolder(ctx, dora, "/home/dora/more", "erin", false); !errors.Is(err, auth.ErrTooMany) {
+		if _, err := svc.ShareFolder(ctx, dora, "/home/dora/more", "erin", false, 0); !errors.Is(err, auth.ErrTooMany) {
 			t.Errorf("one too many: %v", err)
 		}
 		// Changing how one is shared is not one more.
-		if _, err := svc.ShareFolder(ctx, dora, "/home/dora/0", "erin", true); err != nil {
+		if _, err := svc.ShareFolder(ctx, dora, "/home/dora/0", "erin", true, 0); err != nil {
 			t.Errorf("shared again: %v", err)
 		}
 	})
@@ -272,11 +275,11 @@ func TestFolderSharesFolded(t *testing.T) {
 			}
 		}
 		dora, erin := userNamed(t, svc, "dora"), userNamed(t, svc, "erin")
-		first, err := svc.ShareFolder(ctx, dora, "/home/dora/Docs", "erin", false)
+		first, err := svc.ShareFolder(ctx, dora, "/home/dora/Docs", "erin", false, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
-		again, err := svc.ShareFolder(ctx, dora, "/home/dora/DOCS", "erin", true)
+		again, err := svc.ShareFolder(ctx, dora, "/home/dora/DOCS", "erin", true, 0)
 		if err != nil || again.ID != first.ID || again.Path != "/home/dora/Docs" {
 			t.Errorf("shared again: %+v, %v", again, err)
 		}
@@ -293,6 +296,75 @@ func TestFolderSharesFolded(t *testing.T) {
 		}
 		if !rules.Allow("/home/dora/PAPERS/a.txt", auth.ActWrite) {
 			t.Error("the folder spelled otherwise is not shared")
+		}
+	})
+}
+
+func TestFolderShareExpiry(t *testing.T) {
+	services(t, func(t *testing.T, svc *auth.Service) {
+		ctx := context.Background()
+		svc.SetHomes("/home")
+		for _, name := range []string{"dora", "erin"} {
+			if _, err := svc.CreateUser(ctx, name, "user"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dora, erin := userNamed(t, svc, "dora"), userNamed(t, svc, "erin")
+		reads := func(p string) bool {
+			t.Helper()
+			rules, err := svc.RulesFor(ctx, erin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return rules.Allow(p, auth.ActRead)
+		}
+
+		fs, err := svc.ShareFolder(ctx, dora, "/home/dora/docs", "erin", false, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if until := time.Until(fs.ExpiresAt); until < 59*time.Minute || until > time.Hour {
+			t.Errorf("expires in %v", until)
+		}
+		shares, err := svc.SharedWith(ctx, erin)
+		if err != nil || len(shares) != 1 || time.Until(shares[0].ExpiresAt) < 59*time.Minute {
+			t.Errorf("listed: %+v, %v", shares, err)
+		}
+		// Sharing it again changes until when, here to never.
+		if again, err := svc.ShareFolder(ctx, dora, "/home/dora/docs", "erin", false, 0); err != nil || again.ID != fs.ID || !again.ExpiresAt.IsZero() {
+			t.Errorf("shared again: %+v, %v", again, err)
+		}
+		if shares, err := svc.FolderShares(ctx, dora, false); err != nil || len(shares) != 1 || !shares[0].ExpiresAt.IsZero() {
+			t.Errorf("no end: %+v, %v", shares, err)
+		}
+
+		// Once it ends, it is gone, though kept until purged.
+		old, err := svc.ShareFolder(ctx, dora, "/home/dora/old", "erin", true, 50*time.Millisecond)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reads("/home/dora/old/a.txt") {
+			t.Error("not shared before it ends")
+		}
+		time.Sleep(100 * time.Millisecond)
+		if reads("/home/dora/old/a.txt") {
+			t.Error("shared after it ended")
+		}
+		if shares, err := svc.FolderShares(ctx, dora, true); err != nil || len(shares) != 1 || shares[0].Path != "/home/dora/docs" {
+			t.Errorf("listed after it ended: %+v, %v", shares, err)
+		}
+		if _, err := svc.UnshareFolder(ctx, dora, old.ID, false); !errors.Is(err, auth.ErrNotFound) {
+			t.Errorf("stopped after it ended: %v", err)
+		}
+		purge, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+		svc.PurgeExpired(purge, time.Hour, zap.NewNop())
+		cancel()
+		renewed, err := svc.ShareFolder(ctx, dora, "/home/dora/old", "erin", false, 0)
+		if err != nil || renewed.ID == old.ID {
+			t.Errorf("shared anew after the purge: %+v, %v", renewed, err)
+		}
+		if !reads("/home/dora/old/a.txt") || !reads("/home/dora/docs/a.txt") {
+			t.Error("shared anew")
 		}
 	})
 }

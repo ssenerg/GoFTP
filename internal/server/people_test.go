@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"goftp/internal/auth"
 	"goftp/internal/config"
@@ -233,6 +234,36 @@ func TestFolderSharing(t *testing.T) {
 	resp, body = post(t, dora, sharesPath, "action=ungrant&id="+strconv.FormatInt(id, 10), html...)
 	if resp.StatusCode != http.StatusNotFound || !strings.Contains(body, "It is not shared anymore") {
 		t.Errorf("twice: %d %s", resp.StatusCode, body)
+	}
+
+	// For a while only.
+	resp, body = post(t, dora, sharesPath, "action=grant&path=/home/dora/other&user=erin&expires=forever")
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, "1d, 7d, 30d or 90d") {
+		t.Errorf("bad expires: %d %s", resp.StatusCode, body)
+	}
+	resp, body = post(t, dora, sharesPath, "action=grant&path=/home/dora/other&user=erin&expires=7d")
+	expectStatus(t, resp, http.StatusCreated)
+	var until struct {
+		ExpiresAt time.Time `json:"expires_at"`
+	}
+	if err := json.Unmarshal([]byte(body), &until); err != nil || time.Until(until.ExpiresAt) < 7*24*time.Hour-time.Minute {
+		t.Errorf("expires_at: %s", body)
+	}
+	_, body = dora.do(t, "GET", "/home/dora/other/", html...)
+	if !strings.Contains(body, `Can view · until <time datetime="`) || !strings.Contains(body, `<option value="7d">1 week</option>`) {
+		t.Errorf("until in the popover: %s", body)
+	}
+	_, body = erin.do(t, "GET", sharesPath, html...)
+	if !strings.Contains(body, `<span class="cell-label">Until </span><time datetime="`) {
+		t.Errorf("until on the Shared page: %s", body)
+	}
+	if _, err := ta.svc.ShareFolder(t.Context(), &auth.User{ID: idOf(t, ta, "dora"), Username: "dora"}, "/home/dora/other", "erin", false,
+		50*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if resp, _ := erin.do(t, "GET", "/home/dora/other/o.txt"); resp.StatusCode == http.StatusOK {
+		t.Error("erin reads after it ended")
 	}
 
 	// A home shared whole.
