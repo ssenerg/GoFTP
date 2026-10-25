@@ -71,7 +71,7 @@
               <summary class="icon-btn" aria-label="Reset the password of {{.Name}}" title="New temporary password"><svg class="i" aria-hidden="true"><use href="#i-key"/></svg></summary>
               <form method="post" action="/.admin/users" class="popover">
                 <input type="hidden" name="action" value="password"><input type="hidden" name="user" value="{{.Name}}">
-                <p>Give <strong>{{.Name}}</strong> a new temporary password? This signs them out everywhere and ends their share links.</p>
+                <p>Give <strong>{{.Name}}</strong> a new temporary password? This signs them out everywhere and ends their share links and passkeys.</p>
                 <div class="popover-actions"><button type="submit" class="btn primary small">New password</button></div>
               </form>
             </details>

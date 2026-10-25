@@ -66,9 +66,11 @@ type Server struct {
 	proxyNoted atomic.Bool
 
 	shareGuesses *rateLimiter // password checks per share link
-	thumbs       *thumbCache
-	thumbing     chan struct{} // thumbnails being made
-	thumbWait    time.Duration // for a turn to make one
+	// passkeyStarts are the passkey sign-ins started per client.
+	passkeyStarts *rateLimiter
+	thumbs        *thumbCache
+	thumbing      chan struct{} // thumbnails being made
+	thumbWait     time.Duration // for a turn to make one
 }
 
 func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, error) {
@@ -153,6 +155,7 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 	}
 	s.signIns = newRateLimiter(signInsPerMinute, time.Minute)
 	s.shareGuesses = newRateLimiter(shareGuessesPerMinute, time.Minute)
+	s.passkeyStarts = newRateLimiter(passkeyStartsPerMinute, time.Minute)
 	s.thumbs = newThumbCache(cfg.Cache.Dir, int64(cfg.Cache.MaxSize), log)
 	s.thumbing, s.thumbWait = make(chan struct{}, thumbConcurrency()), 30*time.Second
 	s.app.Use(s.noteProxyHeaders, s.checkOrigin, s.identify, s.requirePasswordChange)
@@ -163,6 +166,9 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 	s.app.Post(passwordPath, s.changePassword)
 	s.app.Get(twoFactorPath, s.twoFactorPage)
 	s.app.Post(twoFactorPath, s.twoFactorAction)
+	s.app.Post(passkeyLoginPath, s.passkeyLogin)
+	s.app.Get(passkeysPath, s.passkeysPage)
+	s.app.Post(passkeysPath, s.passkeysAction)
 	s.app.Get(strings.TrimSuffix(adminPath, "/"), s.adminHome)
 	s.app.Get(adminPath, s.adminHome)
 	s.app.Get(usersPath, s.usersPage)

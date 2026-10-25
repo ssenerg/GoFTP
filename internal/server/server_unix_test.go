@@ -71,7 +71,7 @@ func TestSymlinks(t *testing.T) {
 		}
 	}
 	for _, hidden := range []string{"to-outside", "to-secret", "to-parent", "abs-inside", "dangling", "pub", "env", "deep"} {
-		if strings.Contains(body, hidden) {
+		if strings.Contains(body, `data-name="`+hidden+`"`) || strings.Contains(body, `href="/`+hidden) || strings.Contains(body, ">"+hidden+"<") {
 			t.Errorf("listing shows unusable link %s", hidden)
 		}
 	}

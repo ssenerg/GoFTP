@@ -39,11 +39,123 @@
 
   // Confirmations are shown once, not again on reload.
   const params = new URLSearchParams(location.search);
-  const shown = ["uploaded", "created", "renamed", "restored", "deleted", "undo", "trashed", "moved", "copied", "to", "done", "granted", "ungranted"]
+  const shown = ["uploaded", "created", "renamed", "restored", "deleted", "undo", "trashed", "moved", "copied", "to", "done", "granted", "ungranted", "recovered"]
     .filter(p => params.has(p));
   if (shown.length) {
     for (const p of shown) params.delete(p);
     history.replaceState(null, "", location.pathname + (params.size ? "?" + params : ""));
+  }
+
+  // Passkeys (WebAuthn): the server sends and takes binary values in
+  // base64url, which browsers that lack the JSON forms get converted.
+  const fromB64 = s => {
+    s = s.replace(/-/g, "+").replace(/_/g, "/");
+    return Uint8Array.from(atob(s + "=".repeat((4 - s.length % 4) % 4)), c => c.charCodeAt(0));
+  };
+  const toB64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const ids = list => (list || []).map(c => ({ ...c, id: fromB64(c.id) }));
+  const creationOptions = o => PublicKeyCredential.parseCreationOptionsFromJSON
+    ? PublicKeyCredential.parseCreationOptionsFromJSON(o)
+    : { ...o, challenge: fromB64(o.challenge), user: { ...o.user, id: fromB64(o.user.id) }, excludeCredentials: ids(o.excludeCredentials) };
+  const requestOptions = o => PublicKeyCredential.parseRequestOptionsFromJSON
+    ? PublicKeyCredential.parseRequestOptionsFromJSON(o)
+    : { ...o, challenge: fromB64(o.challenge), allowCredentials: ids(o.allowCredentials) };
+  const credentialJSON = cred => {
+    try {
+      if (cred.toJSON) return cred.toJSON();
+    } catch {}
+    const r = cred.response;
+    const out = { id: cred.id, rawId: toB64(cred.rawId), type: cred.type, authenticatorAttachment: cred.authenticatorAttachment,
+      clientExtensionResults: cred.getClientExtensionResults(), response: { clientDataJSON: toB64(r.clientDataJSON) } };
+    if (r.attestationObject) {
+      out.response.attestationObject = toB64(r.attestationObject);
+      out.response.transports = r.getTransports ? r.getTransports() : [];
+    }
+    if (r.authenticatorData) {
+      out.response.authenticatorData = toB64(r.authenticatorData);
+      out.response.signature = toB64(r.signature);
+      out.response.userHandle = r.userHandle ? toB64(r.userHandle) : null;
+    }
+    return out;
+  };
+  const postJSON = async (url, body) => {
+    let resp = null;
+    try {
+      resp = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    } catch {
+      throw new Error("The connection was lost. Try again.");
+    }
+    if (!resp.ok) throw new Error((await detailOf(resp)) || `It did not work (error ${resp.status}).`);
+    return resp.json();
+  };
+  const passkeyFailed = (e, cancelled) => e.name === "NotAllowedError" ? cancelled
+    : e.name === "InvalidStateError" ? "This device has a passkey for you here already."
+    : e.message || "The passkey did not work. Try again.";
+
+  // Signing in with a passkey: with the button, or by picking one where the
+  // browser offers them, under the username.
+  const passkeyBox = $(".passkey-signin");
+  if (passkeyBox && window.PublicKeyCredential) {
+    passkeyBox.hidden = false;
+    const error = $(".popover-error", passkeyBox);
+    const button = $("#passkey-signin");
+    const next = ($("input[name=next]") || {}).value || "/";
+    let waiting = null;
+    const signIn = async mediation => {
+      const { options, token } = await postJSON("/.auth/passkey", { action: "begin" });
+      const abort = new AbortController();
+      if (mediation === "conditional") waiting = abort;
+      else if (waiting) waiting.abort();
+      const cred = await navigator.credentials.get({ publicKey: requestOptions(options.publicKey), mediation, signal: abort.signal });
+      const done = await postJSON("/.auth/passkey", { action: "finish", token, next, credential: credentialJSON(cred) });
+      location.assign(done.next);
+    };
+    button.addEventListener("click", async () => {
+      error.hidden = true;
+      button.disabled = true;
+      try {
+        await signIn("optional");
+      } catch (e) {
+        error.textContent = passkeyFailed(e, "No passkey was picked, or this device has none for this site.");
+        error.hidden = false;
+      }
+      button.disabled = false;
+    });
+    if (PublicKeyCredential.isConditionalMediationAvailable) {
+      PublicKeyCredential.isConditionalMediationAvailable().then(ok => ok && signIn("conditional")).catch(e => {
+        if (e.name !== "AbortError" && e.name !== "NotAllowedError") {
+          error.textContent = passkeyFailed(e, "");
+          error.hidden = false;
+        }
+      });
+    }
+  }
+
+  // Adding a passkey, after the password.
+  const addPasskey = $("#add-passkey");
+  if (addPasskey) {
+    const error = addPasskey.parentElement.querySelector(".popover-error");
+    if (!window.PublicKeyCredential) {
+      addPasskey.hidden = true;
+      $(".passkey-unsupported").hidden = false;
+    }
+    const submit = $("button[type=submit]", addPasskey);
+    addPasskey.addEventListener("submit", async e => {
+      e.preventDefault();
+      error.hidden = true;
+      submit.disabled = true;
+      try {
+        const { options, token } = await postJSON("/.auth/passkeys", { action: "begin", password: addPasskey.elements.password.value });
+        const cred = await navigator.credentials.create({ publicKey: creationOptions(options.publicKey) });
+        await postJSON("/.auth/passkeys", { action: "finish", token, name: addPasskey.elements.name.value, credential: credentialJSON(cred) });
+        location.assign("/.auth/passkeys?done=added");
+        return;
+      } catch (e) {
+        error.textContent = passkeyFailed(e, "The passkey was not made: it was cancelled, or took too long.");
+        error.hidden = false;
+      }
+      submit.disabled = false;
+    });
   }
 
   // Times in the visitor's time zone.

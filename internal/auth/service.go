@@ -46,6 +46,7 @@ type Service struct {
 	fold  atomic.Value // how rules compare paths (see SetFold)
 
 	challenges challenges // sign-ins that wait for a two-factor code
+	ceremonies ceremonies // passkeys being made or used
 }
 
 func NewService(store Store, enforcer *casbin.SyncedEnforcer, sessionTTL time.Duration) *Service {
