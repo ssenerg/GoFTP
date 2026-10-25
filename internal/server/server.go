@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -56,6 +57,9 @@ type Server struct {
 	homeMu       sync.Mutex
 	// uses holds what homes hold, by name (see homeUse).
 	uses sync.Map
+	// davLocks holds the WebDAV locks by token; davMu guards it.
+	davLocks map[string]*davLock
+	davMu    sync.Mutex
 	// fold is how rules compare paths (see checkNames), nil as spelled.
 	fold func(string) string
 	// proxyNoted is set once untrusted proxy headers have been logged.
@@ -93,6 +97,7 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 		root:      root,
 		rootPath:  rootPath,
 		errEscape: escapeError(root),
+		davLocks:  map[string]*davLock{},
 	}
 	fold, err := s.checkNames()
 	if err != nil {
@@ -119,6 +124,7 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 		// Uploads are streamed to disk instead of buffered in memory.
 		StreamRequestBody:            true,
 		DisablePreParseMultipartForm: true,
+		RequestMethods:               append(slices.Clone(fiber.DefaultMethods), davMethods...),
 		CaseSensitive:                true,
 		StrictRouting:                true,
 		// Forwarded headers (the proxy header, X-Forwarded-Proto) are only
@@ -167,8 +173,12 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 	s.app.Get(strings.TrimSuffix(trashPath, "/"), func(c fiber.Ctx) error { return s.redirect(c, trashPath) })
 	s.app.Get(trashPath, s.trashPage)
 	s.app.Post(trashPath, s.trashAction)
+	s.app.Get(strings.TrimSuffix(syncPath, "/"), func(c fiber.Ctx) error { return s.redirect(c, syncPath) })
+	s.app.Get(syncPath, s.syncPage)
+	s.app.Post(syncPath, s.syncAction)
 	s.app.Get(strings.TrimSuffix(searchPath, "/"), func(c fiber.Ctx) error { return s.redirect(c, searchPath) })
 	s.app.Get(searchPath, s.search)
+	s.davRoutes()
 	s.app.Get(sharePrefix+"*", s.shared)
 	s.app.Post(sharePrefix+"*", s.sharePost)
 	s.app.Head(uploadsPrefix+"*", s.headUpload)

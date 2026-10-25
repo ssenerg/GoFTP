@@ -19,6 +19,8 @@ Postgres whose access is decided by [Casbin](https://casbin.org) policies.
 - Names can be searched across folders (see [Search](#search)), and links
   can share files and folders, or take uploads like a drop box (see
   [Share links](#share-links)).
+- Sync apps and file managers reach the same files over WebDAV, signed in
+  with app passwords (see [Syncing with WebDAV](#syncing-with-webdav)).
 - Dotfiles are never listed or served. Paths are resolved with `os.Root`, so
   requests and symlinks cannot escape the served directory.
 
@@ -390,6 +392,58 @@ Creating links needs the `share` action on what is shared, and for
 upload links `write` too. Admins have it; on upgrade, it is added only if
 the admin rule is still the default one. To let others share, e.g. `goftp policy add user:bob '/bob/*' share`.
 
+## Syncing with WebDAV
+
+goftp serves its files over WebDAV at `/.dav/`, so that sync apps can keep
+a folder on a computer or phone in sync with it, and file managers can
+open it: `https://host/.dav/PATH` is `PATH`, with the same rules, homes,
+quotas and trash as the site. **Sync**, in the account menu, shows the
+address (your home, if you have one) and makes app passwords.
+
+Apps sign in with your username and an **app password**, never your own
+password: make one for each app or device, so that you can revoke one
+without the others. It is shown once (only a hash is stored), may be typed
+without its dashes, and stops working when revoked, when you change your
+password, or when you are given a new temporary one. Each user may have
+20. Scripts:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" -d action=create -d name=laptop https://host/.sync/
+# {"id":1,"name":"laptop","username":"bob","password":"abcd-efgh-...","url":"https://host/.dav/"}
+curl -H "Authorization: Bearer $TOKEN" -d action=revoke -d id=1 https://host/.sync/
+```
+
+With [rclone](https://rclone.org), which keeps modification times with
+`vendor=owncloud`, a folder syncs both ways like this; the first run needs
+`--resync`, and the second line can then run from cron:
+
+```sh
+rclone config create goftp webdav url=https://host/.dav/home/bob/ vendor=owncloud user=bob pass=APP-PASSWORD --obscure
+rclone bisync ~/goftp goftp: --exclude ".*" --exclude ".*/**" --resync
+rclone bisync ~/goftp goftp: --exclude ".*" --exclude ".*/**"
+```
+
+FolderSync (Android), GoodSync, Mountain Duck and Cyberduck take the same
+address, username and app password as a WebDAV account; Finder opens it
+with Go → Connect to Server. goftp keeps the modification times that
+apps send with uploads (`X-OC-Mtime`) or set afterwards (`PROPPATCH` of
+`getlastmodified`, or Windows' `Win32LastModifiedTime`), and reports how
+much room a home has left (RFC 4331). Limits:
+
+- Names that start with a dot are not synced, as goftp hides them: exclude
+  them in the app. macOS's `.DS_Store` and `._` files are taken and
+  dropped.
+- Other properties than modification times are refused. Locks are
+  advisory: they keep other WebDAV clients that ask from taking the same
+  lock, and nothing else.
+- WebDAV sends each file in one request, where the browser sends large
+  ones in pieces: behind a proxy that limits the size of requests
+  (Cloudflare: 100 MB on its Free and Pro plans), larger files cannot be
+  uploaded over WebDAV.
+
+Wrong app passwords count against the client's sign-in budget
+(`limiter.*`).
+
 ## Security notes
 
 - Serve over HTTPS: passwords and session tokens travel with every sign-in
@@ -418,6 +472,9 @@ the admin rule is still the default one. To let others share, e.g. `goftp policy
 - Symlinks are followed only when they use relative targets that stay inside
   the served directory, do not lead into a dotfile or dot-directory, and
   lead where the visitor may go anyway.
+- App passwords carry 120 bits, and only their SHA-256 hashes are stored.
+  They sign in to WebDAV alone, with HTTP Basic authentication, which
+  sends them with every request: serve WebDAV over HTTPS only.
 - Share links carry 256-bit tokens, which are kept out of the logs. Link
   passwords are hashed with Argon2id; wrong ones count against the
   client's sign-in budget, and each link takes at most 20 password checks

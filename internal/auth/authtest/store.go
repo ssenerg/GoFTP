@@ -17,8 +17,9 @@ type Store struct {
 	nextID   int64
 	users    map[int64]*auth.User
 	sessions map[string]session
-	shares   map[string]*auth.Share // by token hash
-	uploads  map[string]*upload     // by token hash
+	shares   map[string]*auth.Share       // by token hash
+	uploads  map[string]*upload           // by token hash
+	apps     map[string]*auth.AppPassword // by token hash
 }
 
 type upload struct {
@@ -36,7 +37,7 @@ var _ auth.Store = (*Store)(nil)
 
 func NewStore() *Store {
 	return &Store{users: make(map[int64]*auth.User), sessions: make(map[string]session), shares: make(map[string]*auth.Share),
-		uploads: make(map[string]*upload)}
+		uploads: make(map[string]*upload), apps: make(map[string]*auth.AppPassword)}
 }
 
 // NewService returns a service with an empty store and the default policy.
@@ -102,6 +103,7 @@ func (s *Store) SetPassword(_ context.Context, userID int64, passwordHash string
 	}
 	u.PasswordHash, u.MustChangePassword = passwordHash, mustChange
 	s.deleteSessions(userID)
+	s.deleteApps(userID)
 	if mustChange {
 		s.deleteShares(userID)
 	}
@@ -132,7 +134,81 @@ func (s *Store) DeleteUser(_ context.Context, userID int64) error {
 	delete(s.users, userID)
 	s.deleteSessions(userID)
 	s.deleteShares(userID)
+	s.deleteApps(userID)
 	return nil
+}
+
+func (s *Store) deleteApps(userID int64) {
+	for k, ap := range s.apps {
+		if ap.UserID == userID {
+			delete(s.apps, k)
+		}
+	}
+}
+
+func (s *Store) CreateAppPassword(_ context.Context, tokenHash []byte, ap *auth.AppPassword) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.users[ap.UserID]; !ok {
+		return auth.ErrNotFound
+	}
+	n := 0
+	for _, v := range s.apps {
+		if v.UserID == ap.UserID {
+			n++
+		}
+	}
+	if n >= auth.MaxAppPasswords {
+		return auth.ErrTooMany
+	}
+	s.nextID++
+	ap.ID, ap.CreatedAt = s.nextID, time.Now()
+	c := *ap
+	s.apps[string(tokenHash)] = &c
+	return nil
+}
+
+func (s *Store) AppPasswords(_ context.Context, userID int64) ([]auth.AppPassword, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []auth.AppPassword
+	for _, ap := range s.apps {
+		if ap.UserID == userID {
+			out = append(out, *ap)
+		}
+	}
+	slices.SortFunc(out, func(a, b auth.AppPassword) int { return cmp.Compare(b.ID, a.ID) })
+	return out, nil
+}
+
+func (s *Store) DeleteAppPassword(_ context.Context, userID, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, ap := range s.apps {
+		if ap.ID == id && ap.UserID == userID {
+			delete(s.apps, k)
+			return nil
+		}
+	}
+	return auth.ErrNotFound
+}
+
+func (s *Store) AppPasswordUser(_ context.Context, username string, tokenHash []byte) (*auth.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ap, ok := s.apps[string(tokenHash)]
+	if !ok {
+		return nil, auth.ErrNotFound
+	}
+	u, ok := s.users[ap.UserID]
+	if !ok || u.Username != username {
+		return nil, auth.ErrNotFound
+	}
+	if time.Since(ap.LastUsedAt) > time.Minute {
+		ap.LastUsedAt = time.Now()
+	}
+	c := *u
+	return &c, nil
 }
 
 func (s *Store) CreateSession(_ context.Context, tokenHash []byte, u *auth.User, expires time.Time) error {

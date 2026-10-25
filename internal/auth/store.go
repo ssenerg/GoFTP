@@ -73,14 +73,29 @@ type Store interface {
 	CreateUser(ctx context.Context, username, passwordHash string) (int64, error)
 	UserByName(ctx context.Context, username string) (*User, error)
 	ListUsers(ctx context.Context) ([]User, error)
-	// SetPassword also ends all of the user's sessions and, for a
-	// temporary password (mustChange), their share links.
+	// SetPassword also ends all of the user's sessions and app passwords
+	// and, for a temporary password (mustChange), their share links.
 	SetPassword(ctx context.Context, userID int64, passwordHash string, mustChange bool) error
-	// DeleteUser also deletes the user's sessions and share links.
+	// DeleteUser also deletes the user's sessions, app passwords and share
+	// links.
 	DeleteUser(ctx context.Context, userID int64) error
 	// SetHomeQuota sets how much the user's home may hold (see
 	// User.HomeQuota).
 	SetHomeQuota(ctx context.Context, userID int64, quota *int64) error
+
+	// CreateAppPassword stores the app password ap of ap.UserID by the
+	// hash of the password, and sets its ID and CreatedAt; ErrTooMany if
+	// the user has MaxAppPasswords already, ErrNotFound if there is no
+	// such user.
+	CreateAppPassword(ctx context.Context, tokenHash []byte, ap *AppPassword) error
+	// AppPasswords lists the app passwords of userID, newest first.
+	AppPasswords(ctx context.Context, userID int64) ([]AppPassword, error)
+	// DeleteAppPassword deletes the app password id of userID.
+	DeleteAppPassword(ctx context.Context, userID, id int64) error
+	// AppPasswordUser returns the user username, if tokenHash is the hash
+	// of one of their app passwords, and notes it was used now; at most
+	// once a minute.
+	AppPasswordUser(ctx context.Context, username string, tokenHash []byte) (*User, error)
 
 	// CreateSession starts a session for u, unless u was deleted or changed
 	// password since it was read (ErrNotFound). It may drop the user's

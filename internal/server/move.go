@@ -41,9 +41,9 @@ func (s *Server) relocate(c fiber.Ctx, dirPath string, names []string, into stri
 	for _, name := range unique(names) {
 		var err error
 		if copying {
-			last, err = s.copyEntry(c, dirPath, name, dest)
+			last, err = s.copyEntry(c, dirPath, name, dest, name)
 		} else {
-			last, err = s.moveEntry(c, dirPath, name, dest)
+			last, err = s.moveEntry(c, dirPath, name, dest, name)
 		}
 		if err != nil {
 			return s.partialError(c, did, done, err)
@@ -58,9 +58,13 @@ func (s *Server) relocate(c fiber.Ctx, dirPath string, names []string, into stri
 }
 
 // moveEntry moves the entry name of the folder at dirPath into the folder
-// at dest, and returns its new URL path. The visitor needs the rights to
-// read and delete it, everything in it as well, and to create it there.
-func (s *Server) moveEntry(c fiber.Ctx, dirPath, name, dest string) (string, error) {
+// at dest, as newName, and returns its new URL path. The visitor needs the
+// rights to read and delete it, everything in it as well, and to create it
+// there.
+func (s *Server) moveEntry(c fiber.Ctx, dirPath, name, dest, newName string) (string, error) {
+	if !validName(newName) {
+		return "", explain(fiber.ErrBadRequest, badName)
+	}
 	dir, realDir, info, err := s.entry(c, dirPath, name, auth.ActDelete)
 	if err != nil {
 		return "", err
@@ -72,22 +76,25 @@ func (s *Server) moveEntry(c fiber.Ctx, dirPath, name, dest string) (string, err
 	} else if !ok {
 		return "", fiber.ErrNotFound
 	}
-	dst := path.Join(dest, name)
+	dst := path.Join(dest, newName)
 	to, realTo, err := s.destination(c, dst, info.IsDir())
 	if err != nil {
 		return "", err
 	}
 	defer to.Close()
 	switch {
-	case realTo == realDir:
+	case realTo == realDir && newName == name:
 		return "", explain(fiber.ErrConflict, name+" is in that folder already.")
 	case info.IsDir() && within(realTo, realSrc):
 		return "", explain(fiber.ErrConflict, "A folder cannot be moved into itself.")
 	}
 
-	// The locks keep uploads of the name out of both folders meanwhile.
-	for _, d := range []*os.Root{dir, to} {
-		release, err := s.acquireLock(d, name, tempPrefix+rand.Text()+tempSuffix)
+	// The locks keep uploads of the names out of both folders meanwhile.
+	for _, l := range []struct {
+		dir  *os.Root
+		name string
+	}{{dir, name}, {to, newName}} {
+		release, err := s.acquireLock(l.dir, l.name, tempPrefix+rand.Text()+tempSuffix)
 		if err != nil {
 			return "", err
 		}
@@ -100,22 +107,22 @@ func (s *Server) moveEntry(c fiber.Ctx, dirPath, name, dest string) (string, err
 	// may only move if all of it could be read and deleted here, and
 	// created there.
 	if info.IsDir() {
-		_, err := s.checkTreeTo(c, dir, name, src, realSrc, &treeDest{dst, path.Join(realTo, name)}, auth.ActRead, auth.ActDelete)
+		_, err := s.checkTreeTo(c, dir, name, src, realSrc, &treeDest{dst, path.Join(realTo, newName)}, auth.ActRead, auth.ActDelete)
 		if err := s.treeError(err, "move"); err != nil {
 			return "", err
 		}
 	}
 	// Moving into a home takes room there.
 	fromHome, _ := s.homeName(realSrc)
-	toHome, _ := s.homeName(path.Join(realTo, name))
+	toHome, _ := s.homeName(path.Join(realTo, newName))
 	if toHome != "" && toHome != fromHome {
 		if err := s.homeRoom(toHome, entryBytes(dir, name, info)); err != nil {
 			return "", s.uploadError(nil, err)
 		}
 	}
-	switch err := moveNoReplace(dir, name, to, name, info); {
+	switch err := moveNoReplace(dir, name, to, newName, info); {
 	case errors.Is(err, errExists):
-		return "", explain(fiber.ErrConflict, "Something named "+name+" is in that folder already.")
+		return "", explain(fiber.ErrConflict, "Something named "+newName+" is in that folder already.")
 	case errors.Is(err, syscall.EXDEV):
 		return "", explain(fiber.ErrConflict, "That folder is on another disk: copy it there, then delete it here.")
 	case err != nil:
@@ -132,12 +139,15 @@ func (s *Server) moveEntry(c fiber.Ctx, dirPath, name, dest string) (string, err
 }
 
 // copyEntry copies the entry name of the folder at dirPath into the folder
-// at dest, and returns the copy's URL path: a file, or a folder with what
-// the visitor may read in it, as a zip of it would hold. The visitor needs
-// the right to create all of the copy there.
-func (s *Server) copyEntry(c fiber.Ctx, dirPath, name, dest string) (string, error) {
+// at dest, as newName, and returns the copy's URL path: a file, or a folder
+// with what the visitor may read in it, as a zip of it would hold. The
+// visitor needs the right to create all of the copy there.
+func (s *Server) copyEntry(c fiber.Ctx, dirPath, name, dest, newName string) (string, error) {
 	if !entryName(name) {
 		return "", fiber.ErrBadRequest
+	}
+	if !validName(newName) {
+		return "", explain(fiber.ErrBadRequest, badName)
 	}
 	src := path.Join(dirPath, name)
 	// Checked before the entry is looked up, so that the answer does not
@@ -153,7 +163,7 @@ func (s *Server) copyEntry(c fiber.Ctx, dirPath, name, dest string) (string, err
 		return "", err
 	}
 	_ = f.Close()
-	dst := path.Join(dest, name)
+	dst := path.Join(dest, newName)
 	to, realTo, err := s.destination(c, dst, info.IsDir())
 	if err != nil {
 		return "", err
@@ -165,13 +175,13 @@ func (s *Server) copyEntry(c fiber.Ctx, dirPath, name, dest string) (string, err
 		if within(realTo, realSrc) {
 			return "", explain(fiber.ErrConflict, "A folder cannot be copied into itself.")
 		}
-		contents, err = s.copyFolder(to, name, src, realSrc, dst, path.Join(realTo, name), allow)
+		contents, err = s.copyFolder(to, newName, src, realSrc, dst, path.Join(realTo, newName), allow)
 	} else {
-		err = s.copyFile(to, name, realSrc)
+		err = s.copyFile(to, newName, realSrc)
 	}
 	switch {
 	case errors.Is(err, errExists):
-		return "", explain(fiber.ErrConflict, "Something named "+name+" is in that folder already.")
+		return "", explain(fiber.ErrConflict, "Something named "+newName+" is in that folder already.")
 	case errors.Is(err, errDenied):
 		return "", explain(fiber.ErrForbidden, "You may not create everything in it there.")
 	case errors.Is(err, errTooMuch):

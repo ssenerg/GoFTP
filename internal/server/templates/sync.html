@@ -1,0 +1,122 @@
+{{define "sync"}}{{template "head" .}}
+<body>
+{{template "topbar" .}}
+<main class="container">
+  <div class="head">
+    <div>
+      <h1>Sync</h1>
+      <p class="summary">Keep a folder on your computer or phone in sync with {{if .Home}}your files{{else}}goftp{{end}}, or open them in a file manager, through WebDAV. Apps sign in with an app password, never your own.</p>
+    </div>
+  </div>
+
+  {{with .Created}}
+  <div class="alert success banner onetime" role="status">
+    <svg class="i" aria-hidden="true"><use href="#i-check"/></svg>
+    <div>
+      <p>The app password for <strong>{{.Name}}</strong>, to use with your username, <strong>{{$.Username}}</strong>:</p>
+      <p class="copyable"><code id="app-password">{{.Password}}</code><button type="button" class="btn small" data-copy="app-password" hidden><svg class="i" aria-hidden="true"><use href="#i-copy"/></svg>Copy</button></p>
+      <p class="onetime-note">Copy it into the app now: it is shown only here, once.</p>
+    </div>
+  </div>
+  {{end}}
+  {{with .Notice}}<div class="alert success banner" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg><span>{{.}}</span></div>{{end}}
+  {{with .Error}}<div class="alert error banner" role="alert"><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>{{.}}</span></div>{{end}}
+  {{if .Insecure}}<div class="alert error banner" role="alert"><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>This site is not served over HTTPS, so apps would send app passwords and files unencrypted, and some refuse to.</span></div>{{end}}
+
+  <section class="card admin-form sync-connect">
+    <h2>Connect</h2>
+    <dl class="sync-details">
+      <dt>Server address</dt>
+      <dd class="copyable"><code id="dav-url">{{.URL}}</code><button type="button" class="btn small" data-copy="dav-url" hidden><svg class="i" aria-hidden="true"><use href="#i-copy"/></svg>Copy</button></dd>
+      {{if .Home}}<dd class="faint">Your home. The rest of the site is at {{.SiteURL}}</dd>{{end}}
+      <dt>Username</dt>
+      <dd><code>{{.Username}}</code></dd>
+      <dt>Password</dt>
+      <dd>An app password, made below: one for each app or device, so that you can revoke one without the others.</dd>
+    </dl>
+  </section>
+
+  <section class="card admin-form">
+    <h2>New app password</h2>
+    <form method="post" action="/.sync/" class="inline-form">
+      <input type="hidden" name="action" value="create">
+      <label class="field"><span>For</span>
+        <input name="name" required maxlength="64" placeholder="e.g. rclone on my laptop" autocomplete="off">
+      </label>
+      <button type="submit" class="btn primary">Create</button>
+    </form>
+  </section>
+
+  <div class="card">
+    {{if .Apps}}
+    <table class="files list-table">
+      <thead><tr><th>App password</th><th>Created</th><th>Last used</th><th class="act"><span class="vh">Revoke</span></th></tr></thead>
+      <tbody>
+        {{range .Apps}}
+        <tr>
+          <td class="name"><span class="app-cell"><svg class="i" aria-hidden="true"><use href="#i-key"/></svg><span>{{.Name}}</span></span></td>
+          <td><span class="cell-label">Created </span><time datetime="{{.CreatedISO}}">{{.Created}}</time></td>
+          <td><span class="cell-label">Last used </span>{{if .LastUsed}}<time datetime="{{.LastUsedISO}}">{{.LastUsed}}</time>{{else}}<span class="faint">never</span>{{end}}</td>
+          <td class="act">
+            <details class="confirm">
+              <summary class="icon-btn" aria-label="Revoke the app password for {{.Name}}" title="Revoke"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg></summary>
+              <form method="post" action="/.sync/" class="popover">
+                <input type="hidden" name="action" value="revoke"><input type="hidden" name="id" value="{{.ID}}">
+                <p>Revoke the app password for <strong>{{.Name}}</strong>? Apps using it can no longer sign in.</p>
+                <div class="popover-actions"><button type="submit" class="btn danger small">Revoke</button></div>
+              </form>
+            </details>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <div class="empty">
+      <svg class="i" aria-hidden="true"><use href="#i-sync"/></svg>
+      <p>You have no app passwords.</p>
+      <p>Create one for each app or device you sync with.</p>
+    </div>
+    {{end}}
+  </div>
+
+  <section class="card admin-form sync-apps">
+    <h2>Set up an app</h2>
+    <details>
+      <summary>rclone (Linux, macOS, Windows)</summary>
+      <p>Add goftp as a remote, then sync a folder both ways. The first run needs <code>--resync</code>; run the second line again whenever you like, e.g. from cron.</p>
+      <pre><code id="rclone-steps">rclone config create goftp webdav url={{.URL}} vendor=owncloud user={{.Username}} pass=APP-PASSWORD --obscure
+rclone bisync ~/goftp goftp: --exclude ".*" --exclude ".*/**" --resync
+rclone bisync ~/goftp goftp: --exclude ".*" --exclude ".*/**"</code></pre>
+      <p><button type="button" class="btn small" data-copy="rclone-steps" hidden><svg class="i" aria-hidden="true"><use href="#i-copy"/></svg>Copy</button></p>
+    </details>
+    <details>
+      <summary>FolderSync (Android)</summary>
+      <p>Under Accounts, add a WebDAV account with the server address, your username and an app password. Then add a folder pair of a folder there and one on the phone, with the sync type Two-way.</p>
+    </details>
+    <details>
+      <summary>GoodSync (Windows, macOS)</summary>
+      <p>Choose WebDAV for one side of a job and enter the server address, your username and an app password; choose the folder to sync for the other side. Then analyze and sync.</p>
+    </details>
+    <details>
+      <summary>Mountain Duck and Cyberduck (macOS, Windows)</summary>
+      <p>Make a bookmark or connection of the type WebDAV (HTTPS), paste the server address into Server, and enter your username and an app password. Mountain Duck shows goftp as a disk; its Smart Synchronization keeps the files you open on your computer.</p>
+    </details>
+    <details>
+      <summary>Finder and other file managers</summary>
+      <p>In Finder, choose Go → Connect to Server and enter the server address. Most Linux file managers open <code>{{.FileManagerURL}}</code>.</p>
+    </details>
+    <ul class="sync-notes">
+      <li>Apps see and change what you may on the site, no more{{if .Home}}, and what they put in your home counts toward its quota{{end}}.</li>
+      {{if .Trash}}<li>Files that a sync deletes go to the trash, where you can restore them for a while.</li>{{end}}
+      <li>Names starting with a dot, such as <code>.git</code>, are not synced: goftp hides them. macOS's <code>.DS_Store</code> and <code>._</code> files are taken and dropped.</li>
+      <li>Changing your password revokes all your app passwords.</li>
+    </ul>
+  </section>
+</main>
+{{template "footer" .}}
+{{template "icons"}}
+{{script}}
+</body>
+</html>
+{{end}}
