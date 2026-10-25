@@ -227,6 +227,9 @@ func (s *Server) remove(c fiber.Ctx, dirPath, name string, permanent bool) (stri
 	syncDir(dir)
 	// What its home holds moved to the trash, or left.
 	s.homeChanged(path.Join(realDir, name))
+	if info.IsDir() {
+		s.foldersMoved(path.Join(realDir, name), "")
+	}
 	s.log.Info("delete", zap.String("ip", c.IP()), zap.String("user", visitor(c)), zap.String("path", target),
 		zap.Bool("folder", info.IsDir()), zap.Int("contents", contents), zap.Bool("trash", id != ""))
 	return id, nil
@@ -370,6 +373,9 @@ func (s *Server) rename(c fiber.Ctx, dirPath, from, to string) error {
 			return s.openError(err)
 		}
 		syncDir(dir)
+		if info.IsDir() {
+			s.foldersMoved(path.Join(realDir, from), path.Join(realDir, to))
+		}
 		s.log.Info("rename", zap.String("ip", c.IP()), zap.String("user", visitor(c)), zap.String("path", src), zap.String("to", dst))
 	}
 	return s.done(c, dirPath, fiber.StatusCreated, escapePath(object(dst, info.IsDir())), "renamed="+url.QueryEscape(to))
@@ -496,7 +502,7 @@ func (s *Server) visitorRules(c fiber.Ctx) allowFunc {
 	if r, ok := c.Locals(rulesKey).(cached); ok && r.user == u {
 		return r.allow
 	}
-	allow := s.rulesOf(u)
+	allow := s.rulesOf(c, u)
 	// A home someone else left behind must not reach u: u stays out of it
 	// until it can be moved away.
 	if err := s.claimHome(u); err != nil {
@@ -515,8 +521,10 @@ func (s *Server) visitorRules(c fiber.Ctx) allowFunc {
 
 // rulesOf applies the rules for u, nil for anonymous visitors, as they are
 // now: gathered once for the many checks to come.
-func (s *Server) rulesOf(u *auth.User) allowFunc {
-	rules, err := s.auth.RulesFor(u)
+func (s *Server) rulesOf(c fiber.Ctx, u *auth.User) allowFunc {
+	ctx, cancel := dbContext(c)
+	defer cancel()
+	rules, err := s.auth.RulesFor(ctx, u)
 	return func(obj, act string) (bool, error) {
 		if err != nil {
 			return false, err

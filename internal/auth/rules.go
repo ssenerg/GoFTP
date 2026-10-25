@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"math"
 	"path"
 	"strings"
@@ -19,6 +20,7 @@ const DenyPrefix = "!"
 // roles' rules, and a role's rules before those of the roles it inherits.
 // Between rules that are still equal, a denial comes before an allowance.
 // Signed-in users may also do whatever the rules for everyone allow.
+// Folders shared with a user (see FolderShare) add rules of their own.
 type Rules struct {
 	own, anonymous []rule
 	fold           func(string) string // see SetFold; nil compares paths as they are
@@ -30,6 +32,10 @@ type rule struct {
 	deny     bool
 	act      string
 	distance int // 0 for the user's own rules, 1 for their roles', and so on
+	// owner has the rules of the owner of a folder shared with the visitor,
+	// for the rules that share it: they allow only what its owner may do
+	// and share.
+	owner *Rules
 }
 
 // builtIn is the distance of the rules goftp makes up itself: after every
@@ -70,13 +76,39 @@ func (s *Service) HomeOf(username string) string {
 	return ""
 }
 
-// RulesFor gathers the rules that apply to u, nil for anonymous visitors.
-func (s *Service) RulesFor(u *User) (*Rules, error) {
+// RulesFor gathers the rules that apply to u, nil for anonymous visitors,
+// with those of the folders shared with them.
+func (s *Service) RulesFor(ctx context.Context, u *User) (*Rules, error) {
+	r, err := s.rulesOf(u)
+	if err != nil || u == nil {
+		return r, err
+	}
+	shared, err := s.SharedWith(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	owners := map[int64]*Rules{}
+	for _, fs := range shared {
+		owner := owners[fs.OwnerID]
+		if owner == nil {
+			if owner, err = s.rulesOf(&User{ID: fs.OwnerID, Username: fs.Owner}); err != nil {
+				return nil, err
+			}
+			owners[fs.OwnerID] = owner
+		}
+		r.own = append(r.own, r.folded(shareRules(fs, owner))...)
+	}
+	return r, nil
+}
+
+// rulesOf gathers the rules that apply to u, nil for anonymous visitors,
+// but for those of the folders shared with them.
+func (s *Service) rulesOf(u *User) (*Rules, error) {
 	policies, err := s.enforcer.GetPolicy()
 	if err != nil {
 		return nil, err
 	}
-	r := &Rules{anonymous: compile(policies, map[string]int{Anonymous: 0})}
+	r := &Rules{anonymous: compile(policies, map[string]int{Anonymous: 0}), fold: s.folder()}
 	homes := s.Homes()
 	closed := rule{base: homes + "/", wildcard: true, deny: true, act: "*", distance: builtIn}
 	if homes != "" {
@@ -95,14 +127,18 @@ func (s *Service) RulesFor(u *User) (*Rules, error) {
 				rule{base: home, deny: true, act: ActDelete, distance: builtIn})
 		}
 	}
-	if r.fold = s.folder(); r.fold != nil {
-		for _, rules := range [][]rule{r.own, r.anonymous} {
-			for i := range rules {
-				rules[i].base = r.fold(rules[i].base)
-			}
+	r.own, r.anonymous = r.folded(r.own), r.folded(r.anonymous)
+	return r, nil
+}
+
+// folded has rules compare paths as r does, and returns them.
+func (r *Rules) folded(rules []rule) []rule {
+	if r.fold != nil {
+		for i := range rules {
+			rules[i].base = r.fold(rules[i].base)
 		}
 	}
-	return r, nil
+	return rules
 }
 
 // distances maps sub and the roles it holds, directly or through other
@@ -160,7 +196,10 @@ func decide(rules []rule, obj, act string) bool {
 			winner = r
 		}
 	}
-	return winner != nil && !winner.deny
+	if winner == nil || winner.deny {
+		return false
+	}
+	return winner.owner == nil || winner.owner.Allow(obj, act) && winner.owner.Allow(obj, ActShare)
 }
 
 func (r *rule) matches(obj string) bool {

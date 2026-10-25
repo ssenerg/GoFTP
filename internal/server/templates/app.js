@@ -39,7 +39,7 @@
 
   // Confirmations are shown once, not again on reload.
   const params = new URLSearchParams(location.search);
-  const shown = ["uploaded", "created", "renamed", "restored", "deleted", "undo", "trashed", "moved", "copied", "to", "done"]
+  const shown = ["uploaded", "created", "renamed", "restored", "deleted", "undo", "trashed", "moved", "copied", "to", "done", "granted", "ungranted"]
     .filter(p => params.has(p));
   if (shown.length) {
     for (const p of shown) params.delete(p);
@@ -272,6 +272,56 @@
     });
     document.addEventListener("click", e => {
       if (box.open && !box.contains(e.target)) box.open = false;
+    });
+  }
+
+  // Sharing the folder with people: a popover in the header, whose errors
+  // show in place.
+  for (const box of $$(".people-here")) {
+    const pop = $(".popover", box);
+    const form = $(".people-form", box);
+    const error = $(".popover-error", form);
+    box.addEventListener("toggle", () => {
+      if (!box.open) return;
+      place(pop);
+      form.elements.user.focus();
+    });
+    box.addEventListener("keydown", e => {
+      if (e.key === "Escape" && box.open) {
+        box.open = false;
+        $("summary", box).focus();
+      }
+    });
+    document.addEventListener("click", e => {
+      if (box.open && !box.contains(e.target)) box.open = false;
+    });
+    const submit = $("button[type=submit]", form);
+    form.addEventListener("submit", async e => {
+      e.preventDefault();
+      submit.disabled = true;
+      let resp = null;
+      let status = 0;
+      try {
+        resp = await fetch(form.getAttribute("action"), { method: "POST", body: new URLSearchParams(new FormData(form)) });
+        status = resp.status;
+      } catch {
+        status = 0;
+      }
+      submit.disabled = false;
+      if (status === 201) {
+        const share = await resp.json();
+        location.assign(form.dataset.folder + "?granted=" + encodeURIComponent(share.user));
+        return;
+      }
+      error.textContent = (await detailOf(resp)) || {
+        0: "The connection was lost. Try again.",
+        401: "You were signed out. Sign in and try again.",
+        403: "You may not share this folder.",
+        404: "There is no such user, or the folder is gone.",
+        409: "You share too many folders. Stop sharing some under Shared first.",
+      }[status] || `It could not be shared (error ${status}).`;
+      error.hidden = false;
+      form.elements.user.select();
     });
   }
 

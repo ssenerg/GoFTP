@@ -328,7 +328,7 @@ func (s *Server) linkUpload(c fiber.Ctx, tus bool) error {
 		return err
 	}
 	defer dir.Close()
-	allow := s.linkUploadRules(sh)
+	allow := s.linkUploadRules(c, sh)
 	body := s.requestBody(c)
 	// A link that takes a limited size takes as much as the whole request
 	// at first, and gives back what was not stored.

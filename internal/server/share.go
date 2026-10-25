@@ -101,7 +101,7 @@ func (s *Server) shared(c fiber.Ctx) error {
 	if sh.Upload {
 		return s.serveDropbox(c, sh, view, rel)
 	}
-	allow := s.shareRules(sh)
+	allow := s.shareRules(c, sh)
 	// The link works while its creator may read and share what it leads
 	// to, and that is what it was.
 	f, info, realPath, err := s.lookup(sh.Path, allow)
@@ -248,11 +248,11 @@ func (s *Server) touchLink(c fiber.Ctx, sh *auth.Share) {
 
 // shareRules let a link's visitors read what its creator may read and
 // share, and nothing else. Upload links let them read nothing.
-func (s *Server) shareRules(sh *auth.Share) allowFunc {
+func (s *Server) shareRules(c fiber.Ctx, sh *auth.Share) allowFunc {
 	if sh.Upload {
 		return func(string, string) (bool, error) { return false, nil }
 	}
-	allow := s.rulesOf(&auth.User{ID: sh.CreatedBy, Username: sh.Creator})
+	allow := s.rulesOf(c, &auth.User{ID: sh.CreatedBy, Username: sh.Creator})
 	return func(obj, act string) (bool, error) {
 		if act != auth.ActRead {
 			return false, nil
@@ -269,8 +269,8 @@ func (s *Server) shareRules(sh *auth.Share) allowFunc {
 // its creator may add them there and share the folder they go to, and do
 // nothing else: not even see what is there. The link's handlers only add
 // files to its folder.
-func (s *Server) linkUploadRules(sh *auth.Share) allowFunc {
-	allow := s.rulesOf(&auth.User{ID: sh.CreatedBy, Username: sh.Creator})
+func (s *Server) linkUploadRules(c fiber.Ctx, sh *auth.Share) allowFunc {
+	allow := s.rulesOf(c, &auth.User{ID: sh.CreatedBy, Username: sh.Creator})
 	return func(obj, act string) (bool, error) {
 		if act != auth.ActWrite || strings.HasSuffix(obj, "/") {
 			return false, nil
@@ -290,7 +290,7 @@ func (s *Server) serveDropbox(c fiber.Ctx, sh *auth.Share, view *shareView, rel 
 		return fiber.ErrNotFound
 	}
 	// The link works while its creator may add files to its folder.
-	if ok, err := s.linkUploadRules(sh)(path.Join(sh.Path, "x"), auth.ActWrite); err != nil {
+	if ok, err := s.linkUploadRules(c, sh)(path.Join(sh.Path, "x"), auth.ActWrite); err != nil {
 		return err
 	} else if !ok {
 		c.Locals(shareKey, nil)
@@ -471,11 +471,14 @@ func (s *Server) unlockShare(c fiber.Ctx) error {
 // sharesData is the page listing share links.
 type sharesData struct {
 	page
-	All     bool // everyone's links, for a superadmin
-	Links   []sharedLink
-	Created *createdLink
-	Notice  string
-	Error   string
+	All   bool // everyone's links and folder shares, for a superadmin
+	Links []sharedLink
+	// Folders are the folders the visitor shares with people, WithYou
+	// those shared with them.
+	Folders, WithYou []folderShareView
+	Created          *createdLink
+	Notice           string
+	Error            string
 }
 
 type sharedLink struct {
@@ -526,7 +529,11 @@ func useNoun(sh *auth.Share) string {
 	return "download"
 }
 
-var shareNotices = map[string]string{"revoked": "The link was revoked. It no longer works."}
+var shareNotices = map[string]string{
+	"revoked":   "The link was revoked. It no longer works.",
+	"ungranted": "The folder is no longer shared with them.",
+	"left":      "You left the folder: it is no longer shared with you.",
+}
 
 func (s *Server) sharesPage(c fiber.Ctx) error {
 	if userOf(c) == nil {
@@ -544,7 +551,10 @@ func (s *Server) renderShares(c fiber.Ctx, status int, notice, failure string, c
 	if err != nil {
 		return err
 	}
-	data := sharesData{page: s.page(c, "Shared links"), All: all, Created: created, Notice: notice, Error: failure}
+	data := sharesData{page: s.page(c, "Shared"), All: all, Created: created, Notice: notice, Error: failure}
+	if data.Folders, data.WithYou, err = s.folderShares(c, u, all); err != nil {
+		return err
+	}
 	for _, sh := range shares {
 		l := sharedLink{ID: sh.ID, Name: shareName(sh.Path), Path: sh.Path, Href: escapePath(object(sh.Path, sh.IsDir)),
 			Kind: kindOf(sh.Path), By: sh.Creator, Password: sh.PasswordHash != "", Upload: sh.Upload, Uses: useCount(&sh),
@@ -574,7 +584,7 @@ func (s *Server) renderShares(c fiber.Ctx, status int, notice, failure string, c
 	return s.render(c, status, "shares", data)
 }
 
-// sharesAction creates and revokes links:
+// sharesAction creates and revokes links,
 //
 //	action=create&path=PATH&expires=7d  a link to the file or folder at
 //	                                    PATH, which may also have
@@ -585,6 +595,13 @@ func (s *Server) renderShares(c fiber.Ctx, status int, notice, failure string, c
 //	                                    and max_uses=N to stop it
 //	                                    after N downloads or files sent
 //	action=revoke&id=ID                 ends the link ID
+//
+// and shares folders of the visitor's home with people (see grantFolder):
+//
+//	action=grant&path=PATH&user=NAME    lets the user NAME see what is in
+//	                                    the folder at PATH, or with
+//	                                    access=edit change it too
+//	action=ungrant&id=ID                ends the folder share ID
 //
 // e.g. curl -d action=create -d path=/docs/report.pdf -d expires=1d https://host/.shares/
 func (s *Server) sharesAction(c fiber.Ctx) error {
@@ -601,6 +618,10 @@ func (s *Server) sharesAction(c fiber.Ctx) error {
 		return s.createShare(c, u, form)
 	case "revoke":
 		return s.revokeShare(c, u, form["id"])
+	case "grant":
+		return s.grantFolder(c, u, form)
+	case "ungrant":
+		return s.ungrantFolder(c, u, form)
 	}
 	return fiber.ErrBadRequest
 }
@@ -654,7 +675,7 @@ func (s *Server) createShare(c fiber.Ctx, u *auth.User, form map[string]string) 
 	} else if !ok {
 		return s.deny(c)
 	}
-	f, info, realPath, err := s.lookup(urlPath, s.rulesOf(u))
+	f, info, realPath, err := s.lookup(urlPath, s.rulesOf(c, u))
 	if err != nil {
 		return err
 	}

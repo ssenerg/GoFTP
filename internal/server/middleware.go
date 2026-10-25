@@ -21,6 +21,7 @@ const (
 	sessionKey
 	shareKey
 	rulesKey
+	sharedKey
 )
 
 type logState struct {

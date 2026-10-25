@@ -279,15 +279,19 @@ func (s *Server) davPropfind(c fiber.Ctx, urlPath string) error {
 			}
 		}
 		_ = f.Close()
-	case statusOf(err) == fiber.StatusNotFound && s.towardHome(c, urlPath) != "":
+	case statusOf(err) == fiber.StatusNotFound && len(s.davWays(c, urlPath)) > 0:
 		res = append(res, s.wayHome(urlPath))
 	default:
 		return err
 	}
-	// Folders that rules close can still be the way to one's home.
-	if next := s.towardHome(c, urlPath); depth == "1" && res[0].dir && next != "" &&
-		!slices.ContainsFunc(res[1:], func(r davResource) bool { return r.path == next }) {
-		res = append(res, s.wayHome(next))
+	// Folders that rules close can still be the way to one's home, or to
+	// folders shared with one.
+	if depth == "1" && res[0].dir {
+		for _, next := range s.davWays(c, urlPath) {
+			if !slices.ContainsFunc(res[1:], func(r davResource) bool { return r.path == next }) {
+				res = append(res, s.wayHome(next))
+			}
+		}
 	}
 
 	s.lockDiscoveries(res)
@@ -331,20 +335,8 @@ func (s *Server) davPropfind(c fiber.Ctx, urlPath string) error {
 	return c.Status(fiber.StatusMultiStatus).Send(b.Bytes())
 }
 
-// towardHome returns, for the folder at urlPath on the way to the home of
-// the visitor of c, the next folder on that way; "" for other paths.
-func (s *Server) towardHome(c fiber.Ctx, urlPath string) string {
-	home := s.homeOf(userOf(c))
-	rest, ok := strings.CutPrefix(home, strings.TrimSuffix(urlPath, "/")+"/")
-	if home == "" || !ok || rest == "" {
-		return ""
-	}
-	next, _, _ := strings.Cut(rest, "/")
-	return path.Join(urlPath, next)
-}
-
-// wayHome describes the folder at urlPath on the way to a home, which says
-// nothing of what else it holds.
+// wayHome describes the folder at urlPath on the way to a home, or to a
+// shared folder, which says nothing of what else it holds.
 func (s *Server) wayHome(urlPath string) davResource {
 	r := davResource{path: urlPath, dir: true, mod: time.Now()}
 	if info, err := s.root.Stat(rootName(urlPath)); err == nil {
@@ -707,12 +699,22 @@ func (s *Server) replacing(c fiber.Ctx, dst string, isDir bool, do func() error)
 	if err != nil {
 		return err
 	}
+	// The shares of a folder stay with it, wherever it ends up.
+	asidePath := path.Join(realDir, aside)
+	if isDir {
+		s.foldersMoved(realPath, asidePath)
+		defer s.foldersMoved(asidePath, "")
+	}
 	if err := do(); err != nil {
-		if perr := renameNoReplace(dir, aside, name, info); perr != nil {
+		perr := renameNoReplace(dir, aside, name, info)
+		switch {
+		case perr == nil && isDir:
+			s.foldersMoved(asidePath, realPath)
+		case perr != nil:
 			// Something took the name meanwhile.
 			if _, terr := s.toTrash(c, dir, aside, realPath, info); terr != nil {
 				s.log.Error("put back what a move or copy that failed was to replace", zap.String("path", dst),
-					zap.String("kept as", path.Join(realDir, aside)), zap.Error(perr))
+					zap.String("kept as", asidePath), zap.Error(perr))
 			}
 		}
 		return err
@@ -726,8 +728,7 @@ func (s *Server) replacing(c fiber.Ctx, dst string, isDir bool, do func() error)
 		err = dir.Remove(aside)
 	}
 	if err != nil {
-		s.log.Error("remove what a move or copy replaced", zap.String("path", dst), zap.String("kept as", path.Join(realDir, aside)),
-			zap.Error(err))
+		s.log.Error("remove what a move or copy replaced", zap.String("path", dst), zap.String("kept as", asidePath), zap.Error(err))
 	}
 	syncDir(dir)
 	s.homeChanged(realPath)

@@ -20,6 +20,7 @@ type Store struct {
 	shares   map[string]*auth.Share       // by token hash
 	uploads  map[string]*upload           // by token hash
 	apps     map[string]*auth.AppPassword // by token hash
+	folders  map[int64]*auth.FolderShare  // by ID
 }
 
 type upload struct {
@@ -37,7 +38,7 @@ var _ auth.Store = (*Store)(nil)
 
 func NewStore() *Store {
 	return &Store{users: make(map[int64]*auth.User), sessions: make(map[string]session), shares: make(map[string]*auth.Share),
-		uploads: make(map[string]*upload), apps: make(map[string]*auth.AppPassword)}
+		uploads: make(map[string]*upload), apps: make(map[string]*auth.AppPassword), folders: make(map[int64]*auth.FolderShare)}
 }
 
 // NewService returns a service with an empty store and the default policy.
@@ -135,6 +136,97 @@ func (s *Store) DeleteUser(_ context.Context, userID int64) error {
 	s.deleteSessions(userID)
 	s.deleteShares(userID)
 	s.deleteApps(userID)
+	for id, fs := range s.folders {
+		if fs.OwnerID == userID || fs.UserID == userID {
+			delete(s.folders, id)
+		}
+	}
+	return nil
+}
+
+func (s *Store) ShareFolder(_ context.Context, fs *auth.FolderShare) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, other := range s.folders {
+		if other.Path == fs.Path && other.UserID == fs.UserID {
+			other.Write = fs.Write
+			fs.ID, fs.CreatedAt = other.ID, other.CreatedAt
+			return nil
+		}
+		if other.OwnerID == fs.OwnerID {
+			n++
+		}
+	}
+	if n >= auth.MaxFolderShares {
+		return auth.ErrTooMany
+	}
+	if s.users[fs.OwnerID] == nil || s.users[fs.UserID] == nil {
+		return auth.ErrNotFound
+	}
+	s.nextID++
+	fs.ID, fs.CreatedAt = s.nextID, time.Now()
+	c := *fs
+	s.folders[fs.ID] = &c
+	return nil
+}
+
+// folderShares lists the folder shares keep picks, with the current names
+// of their users.
+func (s *Store) folderShares(keep func(*auth.FolderShare) bool) []auth.FolderShare {
+	var out []auth.FolderShare
+	for _, fs := range s.folders {
+		if keep(fs) {
+			c := *fs
+			c.Owner, c.User = s.users[fs.OwnerID].Username, s.users[fs.UserID].Username
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func (s *Store) FolderShares(_ context.Context, ownerID int64) ([]auth.FolderShare, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.folderShares(func(fs *auth.FolderShare) bool { return ownerID == 0 || fs.OwnerID == ownerID })
+	slices.SortFunc(out, func(a, b auth.FolderShare) int { return cmp.Compare(b.ID, a.ID) })
+	return out, nil
+}
+
+func (s *Store) SharedWith(_ context.Context, userID int64) ([]auth.FolderShare, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.folderShares(func(fs *auth.FolderShare) bool { return fs.UserID == userID })
+	slices.SortFunc(out, func(a, b auth.FolderShare) int { return strings.Compare(a.Path, b.Path) })
+	return out, nil
+}
+
+func (s *Store) DeleteFolderShare(_ context.Context, id, userID int64) (*auth.FolderShare, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fs, ok := s.folders[id]
+	if !ok || userID != 0 && fs.OwnerID != userID && fs.UserID != userID {
+		return nil, auth.ErrNotFound
+	}
+	delete(s.folders, id)
+	c := *fs
+	c.Owner, c.User = "", ""
+	return &c, nil
+}
+
+func (s *Store) MoveFolderShare(_ context.Context, id int64, p string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fs, ok := s.folders[id]
+	if !ok {
+		return auth.ErrNotFound
+	}
+	for other, o := range s.folders {
+		if other != id && o.Path == p && o.UserID == fs.UserID {
+			delete(s.folders, other)
+		}
+	}
+	fs.Path = p
 	return nil
 }
 

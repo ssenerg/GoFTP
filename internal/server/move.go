@@ -168,6 +168,9 @@ func (s *Server) moveEntry(c fiber.Ctx, dirPath, name, dest, newName string, rep
 	}
 	syncDir(dir)
 	syncDir(to)
+	if info.IsDir() {
+		s.foldersMoved(realSrc, path.Join(realTo, newName))
+	}
 	if toHome != fromHome {
 		s.recount(fromHome)
 		s.recount(toHome)
