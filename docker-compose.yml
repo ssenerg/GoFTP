@@ -2,10 +2,21 @@
 #   cp .env.example .env && chmod 600 .env   # then set POSTGRES_PASSWORD
 #   docker compose up -d --build
 #   docker compose exec goftp goftp user add alice --role superadmin
+
+# Docker keeps all of a container's log unless told otherwise, and goftp
+# logs every request: each keeps its last 50 MB, so that requests cannot
+# fill the disk.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
 services:
   postgres:
     image: postgres:18-alpine
     restart: unless-stopped
+    logging: *logging
     environment:
       POSTGRES_DB: goftp
       POSTGRES_USER: goftp
@@ -24,6 +35,7 @@ services:
     build: .
     image: goftp
     restart: unless-stopped
+    logging: *logging
     depends_on:
       postgres:
         condition: service_healthy

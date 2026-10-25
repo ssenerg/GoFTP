@@ -55,7 +55,10 @@ func TestTwoFactor(t *testing.T) {
 		if _, _, err := svc.ConfirmTwoFactor(ctx, dora, "123456"); !errors.Is(err, auth.ErrNotFound) {
 			t.Errorf("confirmed nothing: %v", err)
 		}
-		secret, err := svc.StartTwoFactor(ctx, dora)
+		if _, err := svc.StartTwoFactor(ctx, dora, "wrong password"); !errors.Is(err, auth.ErrInvalidCredentials) {
+			t.Errorf("set up with a wrong password: %v", err)
+		}
+		secret, err := svc.StartTwoFactor(ctx, dora, password)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -92,7 +95,7 @@ func TestTwoFactor(t *testing.T) {
 		if st, err := svc.TwoFactorOf(ctx, dora); err != nil || !st.On || st.Pending != "" || st.RecoveryCodes != 10 {
 			t.Errorf("on: %+v, %v", st, err)
 		}
-		if _, err := svc.StartTwoFactor(ctx, dora); !errors.Is(err, auth.ErrInvalid) {
+		if _, err := svc.StartTwoFactor(ctx, dora, password); !errors.Is(err, auth.ErrInvalid) {
 			t.Errorf("set up again: %v", err)
 		}
 		dora = userNamed(t, svc, "dora")
@@ -158,6 +161,16 @@ func TestTwoFactor(t *testing.T) {
 		if _, err := svc.ContinueLogin(ctx, "nope", codes[2]); !errors.Is(err, auth.ErrChallengeGone) {
 			t.Errorf("no such sign-in: %v", err)
 		}
+		// Those were five wrong codes in a row: the next waits (see
+		// TestWrongCodes).
+		_, err = svc.LoginWithCode(ctx, "dora", password, codes[2])
+		if refused := (*auth.CodesRefused)(nil); !errors.As(err, &refused) {
+			t.Errorf("after five wrong codes: %v", err)
+		}
+		svc.AgeWrongCodes(time.Minute)
+		if _, err := svc.LoginWithCode(ctx, "dora", password, codes[2]); err != nil {
+			t.Errorf("a minute later: %v", err)
+		}
 
 		// New recovery codes, and turning it off, take the password.
 		if _, err := svc.NewRecoveryCodes(ctx, dora, "wrong password"); !errors.Is(err, auth.ErrInvalidCredentials) {
@@ -190,7 +203,7 @@ func TestTwoFactor(t *testing.T) {
 		}
 
 		// Administrators turn it off for those who lost their app.
-		secret, err = svc.StartTwoFactor(ctx, dora)
+		secret, err = svc.StartTwoFactor(ctx, dora, password)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -208,6 +221,94 @@ func TestTwoFactor(t *testing.T) {
 		}
 		if _, err := svc.Login(ctx, "dora", password); err != nil {
 			t.Errorf("after the reset: %v", err)
+		}
+	})
+}
+
+func TestWrongCodes(t *testing.T) {
+	services(t, func(t *testing.T, svc *auth.Service) {
+		ctx := context.Background()
+		password, err := svc.CreateUser(ctx, "dora", "user")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dora := userNamed(t, svc, "dora")
+		secret, err := svc.StartTwoFactor(ctx, dora, password)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := svc.ConfirmTwoFactor(ctx, dora, codeOf(t, secret, 0)); err != nil {
+			t.Fatal(err)
+		}
+		code := codeOf(t, secret, 1)
+		wrong := otherCode(code)
+		refused := func(what string, err error, atMost time.Duration) {
+			t.Helper()
+			var r *auth.CodesRefused
+			if !errors.As(err, &r) || r.Wait <= atMost/2 || r.Wait > atMost {
+				t.Errorf("%s: %v (%+v)", what, err, r)
+			}
+		}
+		withChallenge := func(code string) error {
+			t.Helper()
+			_, err := svc.Login(ctx, "dora", password)
+			var needed *auth.CodeNeeded
+			if !errors.As(err, &needed) {
+				t.Fatal(err)
+			}
+			_, err = svc.ContinueLogin(ctx, needed.Challenge, code)
+			return err
+		}
+
+		// Five wrong codes in a row go, however they come; what cannot be a
+		// code does not count.
+		for i := range 5 {
+			var err error
+			if i%2 == 0 {
+				_, err = svc.LoginWithCode(ctx, "dora", password, wrong)
+			} else {
+				err = withChallenge(wrong)
+			}
+			if !errors.Is(err, auth.ErrWrongCode) {
+				t.Errorf("wrong code %d: %v", i, err)
+			}
+			if _, err := svc.LoginWithCode(ctx, "dora", password, "12"); !errors.Is(err, auth.ErrWrongCode) {
+				t.Errorf("no code: %v", err)
+			}
+		}
+		// The next waits a minute, unchecked: even the right one.
+		_, err = svc.LoginWithCode(ctx, "dora", password, code)
+		refused("the sixth", err, time.Minute)
+		refused("the sixth, waiting for it", withChallenge(code), time.Minute)
+		// Then twice as long after each wrong one.
+		for _, wait := range []time.Duration{2 * time.Minute, 4 * time.Minute} {
+			svc.AgeWrongCodes(wait / 2)
+			if _, err := svc.LoginWithCode(ctx, "dora", password, wrong); !errors.Is(err, auth.ErrWrongCode) {
+				t.Errorf("after waiting: %v", err)
+			}
+			_, err = svc.LoginWithCode(ctx, "dora", password, code)
+			refused("then", err, wait)
+		}
+		// Up to a day.
+		for range 20 {
+			svc.AgeWrongCodes(24 * time.Hour)
+			if _, err := svc.LoginWithCode(ctx, "dora", password, wrong); !errors.Is(err, auth.ErrWrongCode) {
+				t.Fatalf("after a day: %v", err)
+			}
+		}
+		_, err = svc.LoginWithCode(ctx, "dora", password, code)
+		refused("at most", err, 24*time.Hour)
+
+		// The right code ends the streak; made now, as checking codes takes
+		// a while.
+		svc.AgeWrongCodes(24 * time.Hour)
+		if _, err := svc.LoginWithCode(ctx, "dora", password, codeOf(t, secret, 1)); err != nil {
+			t.Fatal(err)
+		}
+		for range 5 {
+			if _, err := svc.LoginWithCode(ctx, "dora", password, wrong); !errors.Is(err, auth.ErrWrongCode) {
+				t.Errorf("after the right code: %v", err)
+			}
 		}
 	})
 }

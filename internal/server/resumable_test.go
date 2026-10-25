@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -259,6 +260,37 @@ func TestResumableCancel(t *testing.T) {
 	}
 	if len(f.logs.entries("upload cancelled")) != 1 {
 		t.Error("cancel not logged")
+	}
+}
+
+// A stored upload keeps its use of a link, even when something that found
+// it unfinished drops it afterwards, as a HEAD does that finds its temp file
+// gone the moment it is stored.
+func TestResumableLinkUseKept(t *testing.T) {
+	f := newFixture(t)
+	f.write(t, "inbox/.keep", "")
+	anon := f.as("")
+	drop, info := createLink(t, f.as("admin"), url.Values{"path": {"/inbox"}, "kind": {"upload"}, "max_uses": {"2"}, "max_size": {"8"}})
+	loc := startResumable(t, anon, drop+"/", "one.txt", 4)
+	up, err := f.auth.svc.UploadByToken(t.Context(), strings.TrimPrefix(loc, uploadsPrefix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectStatus(t, patchAt(t, anon, loc, 0, "1234"), http.StatusNoContent)
+	f.srv.dropUpload(up)
+	sh, err := f.auth.svc.ShareByID(t.Context(), int64(info["id"].(float64)))
+	if err != nil || sh.Uses != 1 || sh.Bytes != 4 {
+		t.Fatalf("after the drop: %+v, %v", sh, err)
+	}
+	if readFile(t, f.dir, "inbox/one.txt") != "1234" {
+		t.Error("the stored file went")
+	}
+	// Dropped before it was stored, it gives its use back.
+	loc = startResumable(t, anon, drop+"/", "two.txt", 4)
+	resp, _ := tus(t, anon, "DELETE", loc, "")
+	expectStatus(t, resp, http.StatusNoContent)
+	if sh, err := f.auth.svc.ShareByID(t.Context(), sh.ID); err != nil || sh.Uses != 1 || sh.Bytes != 4 {
+		t.Errorf("after a cancelled upload: %+v, %v", sh, err)
 	}
 }
 

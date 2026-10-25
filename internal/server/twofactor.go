@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"math"
 	"strings"
 	"time"
 
@@ -108,7 +109,7 @@ func qrSVG(code *qr.Code) template.HTML {
 
 // twoFactorAction sets up two-factor sign-in, sent URL-encoded or as JSON:
 //
-//	action=start              makes a new secret for the visitor's app:
+//	action=start&password=PW  makes a new secret for the visitor's app:
 //	                          {"secret": BASE32, "uri": "otpauth://..."}
 //	action=confirm&code=CODE  turns it on, given a code of the secret, and
 //	                          answers with recovery codes, shown once; it
@@ -139,18 +140,6 @@ func (s *Server) twoFactorAction(c fiber.Ctx) error {
 	c.Set(fiber.HeaderCacheControl, "no-store")
 
 	switch form["action"] {
-	case "start":
-		secret, err := s.auth.StartTwoFactor(ctx, u)
-		if errors.Is(err, auth.ErrInvalid) {
-			return fail(fiber.StatusConflict, "Two-factor sign-in is on already.")
-		}
-		if err != nil {
-			return err
-		}
-		if isJSON {
-			return c.JSON(fiber.Map{"secret": secret, "uri": auth.OTPAuthURI(c.Hostname(), u.Username, secret)})
-		}
-		return s.redirect(c, twoFactorPath)
 	case "confirm":
 		codes, changed, err := s.auth.ConfirmTwoFactor(ctx, u, form["code"])
 		switch {
@@ -173,27 +162,36 @@ func (s *Server) twoFactorAction(c fiber.Ctx) error {
 		c.Locals(sessionKey, &session{user: changed.User, token: changed.Token, cookie: sess.cookie})
 		return s.renderTwoFactor(c, fiber.StatusOK, twoFactorPage{Codes: codes,
 			Notice: "Two-factor sign-in is on. You were signed out everywhere else."})
-	case "codes", "off":
+	case "start", "codes", "off":
 	default:
 		return fiber.ErrBadRequest
 	}
 
-	// Both take the password.
+	// These take the password.
 	check, wait := s.checkPassword(c, u.Username)
 	if wait > 0 {
 		retryAfter(c, wait)
 		return fail(fiber.StatusTooManyRequests, tooMany)
 	}
-	var codes []string
-	if form["action"] == "codes" {
+	var (
+		secret string
+		codes  []string
+	)
+	switch form["action"] {
+	case "start":
+		secret, err = s.auth.StartTwoFactor(ctx, u, form["password"])
+	case "codes":
 		codes, err = s.auth.NewRecoveryCodes(ctx, u, form["password"])
-	} else {
+	default:
 		err = s.auth.DisableTwoFactor(ctx, u, form["password"])
 	}
 	switch {
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		s.log.Warn("two-factor change refused: wrong password", zap.String("ip", c.IP()), zap.String("user", u.Username))
 		return fail(fiber.StatusForbidden, "The password is wrong.")
+	case errors.Is(err, auth.ErrInvalid) && form["action"] == "start":
+		check.succeeded()
+		return fail(fiber.StatusConflict, "Two-factor sign-in is on already.")
 	case errors.Is(err, auth.ErrInvalid):
 		check.succeeded()
 		return fail(fiber.StatusConflict, "Two-factor sign-in is off.")
@@ -206,6 +204,12 @@ func (s *Server) twoFactorAction(c fiber.Ctx) error {
 		return err
 	}
 	check.succeeded()
+	if form["action"] == "start" {
+		if isJSON {
+			return c.JSON(fiber.Map{"secret": secret, "uri": auth.OTPAuthURI(c.Hostname(), u.Username, secret)})
+		}
+		return s.redirect(c, twoFactorPath)
+	}
 	if form["action"] == "off" {
 		s.log.Info("two-factor sign-in off", zap.String("ip", c.IP()), zap.String("user", u.Username))
 		if isJSON {
@@ -256,7 +260,12 @@ func (s *Server) loginCode(c fiber.Ctx, form map[string]string, isJSON bool, nex
 	ctx, cancel := dbContext(c)
 	defer cancel()
 	sess, err := s.auth.ContinueLogin(ctx, challenge, form["code"])
+	var refused *auth.CodesRefused
 	switch {
+	case errors.As(err, &refused):
+		s.log.Warn("login codes refused: too many wrong ones", zap.String("ip", c.IP()))
+		retryAfter(c, refused.Wait)
+		return fail(fiber.StatusTooManyRequests, tooManyCodes(refused.Wait), false)
 	case errors.Is(err, auth.ErrWrongCode):
 		s.log.Warn("login code wrong", zap.String("ip", c.IP()))
 		return fail(fiber.StatusUnauthorized, "Wrong code. Enter the one your app shows now, or a recovery code.", false)
@@ -271,6 +280,18 @@ func (s *Server) loginCode(c fiber.Ctx, form map[string]string, isJSON bool, nex
 	}
 	check.refund()
 	return s.signedIn(c, sess, isJSON, next)
+}
+
+// tooManyCodes says to wait before the next two-factor code.
+func tooManyCodes(wait time.Duration) string {
+	n, unit := int(math.Ceil(wait.Minutes())), "minute"
+	if n > 90 {
+		n, unit = int(math.Ceil(wait.Hours())), "hour"
+	}
+	if n != 1 {
+		unit += "s"
+	}
+	return fmt.Sprintf("Too many wrong codes: try again in %d %s, or sign in with a passkey.", n, unit)
 }
 
 // askCode answers a sign-in that needs a two-factor code, with challenge to

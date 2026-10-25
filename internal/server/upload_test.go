@@ -485,6 +485,21 @@ func TestMinFree(t *testing.T) {
 	if resp, _ := op.send(t, "POST", "/inbox/", body, "Content-Type", ctype); resp.StatusCode != http.StatusInsufficientStorage {
 		t.Errorf("form: %d", resp.StatusCode)
 	}
+	// So do empty files and folders, which take no bytes but an inode.
+	if resp, _ := op.send(t, "PUT", "/inbox/empty.txt", strings.NewReader("")); resp.StatusCode != http.StatusInsufficientStorage {
+		t.Errorf("an empty file: %d", resp.StatusCode)
+	}
+	body, ctype = multipartForm(t, formPart{field: "file", filename: "empty.txt"})
+	if resp, _ := op.send(t, "POST", "/inbox/", body, "Content-Type", ctype); resp.StatusCode != http.StatusInsufficientStorage {
+		t.Errorf("an empty file in a form: %d", resp.StatusCode)
+	}
+	if resp, _ := post(t, op, "/inbox/", "folder=sub"); resp.StatusCode != http.StatusInsufficientStorage {
+		t.Errorf("a folder: %d", resp.StatusCode)
+	}
+	f.write(t, "docs/sub/.keep", "")
+	if resp, _ := post(t, op, "/", "copy=docs&into=/inbox"); resp.StatusCode != http.StatusInsufficientStorage {
+		t.Errorf("a folder copied: %d", resp.StatusCode)
+	}
 	if got := leftovers(filepath.Join(f.dir, "inbox")); len(got) != 0 {
 		t.Errorf("left behind: %v", got)
 	}

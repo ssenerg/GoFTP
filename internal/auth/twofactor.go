@@ -36,6 +36,13 @@ const (
 	challengeTTL   = 5 * time.Minute
 	challengeTries = 5
 	maxChallenges  = 10_000
+	// Wrong codes count for their user, wherever they come from: after
+	// freeWrongCodes in a row, each next code waits, twice as long each
+	// time, up to maxCodeWait. Guessing then takes years, even with the
+	// password and many addresses.
+	freeWrongCodes = 5
+	firstCodeWait  = time.Minute
+	maxCodeWait    = 24 * time.Hour
 )
 
 var (
@@ -52,6 +59,70 @@ var (
 type CodeNeeded struct{ Challenge string }
 
 func (e *CodeNeeded) Error() string { return "a two-factor code is needed" }
+
+// CodesRefused is the error of a two-factor code that came too soon after
+// too many wrong ones: it was not checked, and the next may come after
+// Wait.
+type CodesRefused struct{ Wait time.Duration }
+
+func (e *CodesRefused) Error() string { return "too many wrong two-factor codes" }
+
+// wrongCodes counts the wrong two-factor codes in a row of each user, by ID.
+type wrongCodes struct {
+	mu sync.Mutex
+	m  map[int64]*wrongStreak
+}
+
+type wrongStreak struct {
+	n    int
+	last time.Time
+}
+
+// next is when the next code may come.
+func (w *wrongStreak) next() time.Time {
+	if w.n < freeWrongCodes {
+		return w.last
+	}
+	return w.last.Add(min(firstCodeWait<<min(w.n-freeWrongCodes, 16), maxCodeWait))
+}
+
+// take counts a code of the user id as wrong before it is checked, so that
+// codes checked at once cannot exceed the limit, or says how long to wait
+// for one.
+func (ws *wrongCodes) take(id int64, now time.Time) time.Duration {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	if ws.m == nil {
+		ws.m = map[int64]*wrongStreak{}
+	}
+	w := ws.m[id]
+	if w == nil {
+		w = &wrongStreak{}
+		ws.m[id] = w
+	}
+	if next := w.next(); now.Before(next) {
+		return next.Sub(now)
+	}
+	w.n++
+	w.last = now
+	return 0
+}
+
+// right ends the streak of the user id, after a code that was right.
+func (ws *wrongCodes) right(id int64) {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	delete(ws.m, id)
+}
+
+// refund takes back a code of the user id that could not be checked.
+func (ws *wrongCodes) refund(id int64) {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	if w := ws.m[id]; w != nil && w.n > 0 {
+		w.n--
+	}
+}
 
 // challenge is a sign-in that waits for a code.
 type challenge struct {
@@ -171,8 +242,35 @@ func (s *Service) loginSession(ctx context.Context, u *User, recovery bool) (*Se
 
 // checkCode checks code, from u's app or one of their recovery codes, and
 // uses it up. It reports whether it was a recovery code. Without two-factor
-// sign-in, as it was turned off meanwhile, any code will do.
+// sign-in, as it was turned off meanwhile, any code will do. After too many
+// wrong codes, it refuses them for a while (*CodesRefused); what cannot be
+// a code of either kind, such as one cut short, is no guess and does not
+// count.
 func (s *Service) checkCode(ctx context.Context, u *User, code string) (bool, error) {
+	code = strings.Map(func(r rune) rune {
+		if r == ' ' || r == '-' {
+			return -1
+		}
+		return r
+	}, strings.ToLower(strings.TrimSpace(code)))
+	if !totpShaped(code) && !recoveryShaped(code) {
+		return false, ErrWrongCode
+	}
+	if wait := s.wrongCodes.take(u.ID, time.Now()); wait > 0 {
+		return false, &CodesRefused{Wait: wait}
+	}
+	recovery, err := s.matchCode(ctx, u, code)
+	switch {
+	case err == nil:
+		s.wrongCodes.right(u.ID)
+	case !errors.Is(err, ErrWrongCode):
+		s.wrongCodes.refund(u.ID)
+	}
+	return recovery, err
+}
+
+// matchCode does checkCode's checking.
+func (s *Service) matchCode(ctx context.Context, u *User, code string) (bool, error) {
 	tf, err := s.store.TwoFactor(ctx, u.ID)
 	if err != nil {
 		return false, err
@@ -180,12 +278,6 @@ func (s *Service) checkCode(ctx context.Context, u *User, code string) (bool, er
 	if tf.Secret == nil {
 		return false, nil
 	}
-	code = strings.Map(func(r rune) rune {
-		if r == ' ' || r == '-' {
-			return -1
-		}
-		return r
-	}, strings.ToLower(strings.TrimSpace(code)))
 	if step, ok := matchTOTP(tf.Secret, code, time.Now(), tf.Step); ok {
 		used, err := s.store.UseTwoFactorStep(ctx, u.ID, step)
 		if err != nil || !used {
@@ -193,7 +285,7 @@ func (s *Service) checkCode(ctx context.Context, u *User, code string) (bool, er
 		}
 		return false, nil
 	}
-	if len(code) != recoveryCodeLength || strings.ContainsFunc(code, func(r rune) bool { return !('a' <= r && r <= 'z' || '2' <= r && r <= '7') }) {
+	if !recoveryShaped(code) {
 		return false, ErrWrongCode
 	}
 	used, err := s.store.UseRecoveryCode(ctx, u.ID, tokenHash(code))
@@ -201,6 +293,12 @@ func (s *Service) checkCode(ctx context.Context, u *User, code string) (bool, er
 		return false, cmpErr(err, ErrWrongCode)
 	}
 	return true, nil
+}
+
+// recoveryShaped reports whether code has the letters and digits of a
+// recovery code.
+func recoveryShaped(code string) bool {
+	return len(code) == recoveryCodeLength && !strings.ContainsFunc(code, func(r rune) bool { return !('a' <= r && r <= 'z' || '2' <= r && r <= '7') })
 }
 
 // cmpErr returns err, or otherwise if err is nil.
@@ -214,7 +312,7 @@ func cmpErr(err, otherwise error) error {
 // matchTOTP returns the time step around now for which code is the code of
 // secret, if one is, after the step last.
 func matchTOTP(secret []byte, code string, now time.Time, last int64) (int64, bool) {
-	if len(code) != totpDigits || strings.ContainsFunc(code, func(r rune) bool { return r < '0' || r > '9' }) {
+	if !totpShaped(code) {
 		return 0, false
 	}
 	at := now.Unix() / totpPeriod
@@ -224,6 +322,11 @@ func matchTOTP(secret []byte, code string, now time.Time, last int64) (int64, bo
 		}
 	}
 	return 0, false
+}
+
+// totpShaped reports whether code has the digits of an app's code.
+func totpShaped(code string) bool {
+	return len(code) == totpDigits && !strings.ContainsFunc(code, func(r rune) bool { return r < '0' || r > '9' })
 }
 
 // totpCode is the code of secret for the time step (RFC 4226, 5.3).
@@ -261,10 +364,15 @@ func (s *Service) TwoFactorOf(ctx context.Context, u *User) (*TwoFactorState, er
 	return st, nil
 }
 
-// StartTwoFactor makes a new secret for u to add to their app, and returns
-// it in base32: two-factor sign-in is on once ConfirmTwoFactor gets a code
-// of it. ErrInvalid if it is on already.
-func (s *Service) StartTwoFactor(ctx context.Context, u *User) (string, error) {
+// StartTwoFactor makes a new secret for u to add to their app, after
+// checking their password, and returns it in base32: two-factor sign-in is
+// on once ConfirmTwoFactor gets a code of it. ErrInvalid if it is on
+// already. The password keeps a stolen session from turning it on with a
+// secret of its own, which would lock u out.
+func (s *Service) StartTwoFactor(ctx context.Context, u *User, password string) (string, error) {
+	if err := s.checkPasswordOf(ctx, u, password); err != nil {
+		return "", err
+	}
 	tf, err := s.store.TwoFactor(ctx, u.ID)
 	if err != nil {
 		return "", err

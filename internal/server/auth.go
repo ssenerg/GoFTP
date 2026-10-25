@@ -391,11 +391,18 @@ func (s *Server) login(c fiber.Ctx) error {
 	ctx, cancel := dbContext(c)
 	defer cancel()
 	sess, err := s.auth.LoginWithCode(ctx, form["username"], form["password"], form["code"])
-	var needed *auth.CodeNeeded
+	var (
+		needed  *auth.CodeNeeded
+		refused *auth.CodesRefused
+	)
 	switch {
 	case errors.As(err, &needed):
 		check.succeeded()
 		return s.askCode(c, isJSON, needed.Challenge, next)
+	case errors.As(err, &refused):
+		s.log.Warn("login codes refused: too many wrong ones", zap.String("ip", c.IP()), zap.String("user", auth.NormalizeUsername(form["username"])))
+		retryAfter(c, refused.Wait)
+		return fail(fiber.StatusTooManyRequests, tooManyCodes(refused.Wait))
 	case errors.Is(err, auth.ErrWrongCode):
 		// The password was right; the failure still counts.
 		s.log.Warn("login code wrong", zap.String("ip", c.IP()), zap.String("user", auth.NormalizeUsername(form["username"])))

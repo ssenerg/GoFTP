@@ -142,10 +142,10 @@ func (s *Store) UserByID(_ context.Context, id int64) (*auth.User, error) {
 	return &c, nil
 }
 
-func (s *Store) CreatePasskey(_ context.Context, pk *auth.Passkey) error {
+func (s *Store) CreatePasskey(_ context.Context, pk *auth.Passkey, passwordHash string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.users[pk.UserID]; !ok {
+	if u, ok := s.users[pk.UserID]; !ok || u.PasswordHash != passwordHash {
 		return auth.ErrNotFound
 	}
 	n := 0
@@ -438,10 +438,10 @@ func (s *Store) deleteApps(userID int64) {
 	}
 }
 
-func (s *Store) CreateAppPassword(_ context.Context, tokenHash []byte, ap *auth.AppPassword) error {
+func (s *Store) CreateAppPassword(_ context.Context, tokenHash []byte, ap *auth.AppPassword, passwordHash string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.users[ap.UserID]; !ok {
+	if u, ok := s.users[ap.UserID]; !ok || u.PasswordHash != passwordHash {
 		return auth.ErrNotFound
 	}
 	n := 0
@@ -682,6 +682,18 @@ func (s *Store) DeleteShare(_ context.Context, id, userID int64) error {
 	return auth.ErrNotFound
 }
 
+func (s *Store) MoveShare(_ context.Context, id int64, p string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sh := range s.shares {
+		if sh.ID == id {
+			sh.Path = p
+			return nil
+		}
+	}
+	return auth.ErrNotFound
+}
+
 func (s *Store) deleteShares(userID int64) {
 	for k, sh := range s.shares {
 		if sh.CreatedBy == userID {
@@ -775,9 +787,10 @@ func (s *Store) DeleteUpload(_ context.Context, id int64) error {
 	for k, up := range s.uploads {
 		if up.ID == id {
 			delete(s.uploads, k)
+			return nil
 		}
 	}
-	return nil
+	return auth.ErrNotFound
 }
 
 func (s *Store) TakeExpiredUploads(_ context.Context, limit int) ([]auth.Upload, error) {

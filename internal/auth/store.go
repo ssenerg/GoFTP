@@ -100,8 +100,9 @@ type Store interface {
 	// CreateAppPassword stores the app password ap of ap.UserID by the
 	// hash of the password, and sets its ID and CreatedAt; ErrTooMany if
 	// the user has MaxAppPasswords already, ErrNotFound if there is no
-	// such user.
-	CreateAppPassword(ctx context.Context, tokenHash []byte, ap *AppPassword) error
+	// such user, or their password hash is no longer passwordHash (see
+	// SetPassword).
+	CreateAppPassword(ctx context.Context, tokenHash []byte, ap *AppPassword, passwordHash string) error
 	// AppPasswords lists the app passwords of userID, newest first.
 	AppPasswords(ctx context.Context, userID int64) ([]AppPassword, error)
 	// DeleteAppPassword deletes the app password id of userID.
@@ -153,8 +154,9 @@ type Store interface {
 
 	// CreatePasskey stores pk and sets its ID and CreatedAt; ErrTooMany if
 	// its user has MaxPasskeys, ErrExists if its credential is stored
-	// already.
-	CreatePasskey(ctx context.Context, pk *Passkey) error
+	// already, ErrNotFound if there is no such user, or their password hash
+	// is no longer passwordHash (see SetPassword).
+	CreatePasskey(ctx context.Context, pk *Passkey, passwordHash string) error
 	// Passkeys lists userID's passkeys, oldest first.
 	Passkeys(ctx context.Context, userID int64) ([]Passkey, error)
 	// UsePasskey notes that the passkey id was used, now with credential.
@@ -199,6 +201,9 @@ type Store interface {
 	// DeleteShare deletes the link id if userID created it, or whoever did
 	// if userID is 0.
 	DeleteShare(ctx context.Context, id, userID int64) error
+	// MoveShare gives the link id the path p, where what it leads to
+	// moved.
+	MoveShare(ctx context.Context, id int64, p string) error
 	// DeleteExpiredShares deletes the links and folder shares that
 	// expired.
 	DeleteExpiredShares(ctx context.Context) error
@@ -217,6 +222,8 @@ type Store interface {
 	// ReleaseUpload ends writer's claim and keeps the upload for keep from
 	// now.
 	ReleaseUpload(ctx context.Context, id int64, writer string, keep time.Duration) error
+	// DeleteUpload forgets the upload id; ErrNotFound if it is gone
+	// already.
 	DeleteUpload(ctx context.Context, id int64) error
 	// TakeExpiredUploads deletes up to limit expired uploads that no
 	// writer claims, and returns them.

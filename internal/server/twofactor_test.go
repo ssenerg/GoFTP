@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"html"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
@@ -38,12 +39,12 @@ var (
 	challengeSent = regexp.MustCompile(`name="challenge" value="([A-Za-z0-9_-]{43})"`)
 )
 
-// setUpTwoFactor turns two-factor sign-in on for the user of f from the
-// page, and returns their secret, recovery codes and new session.
-func setUpTwoFactor(t *testing.T, f *fixture) (string, []string, *fixture) {
+// setUpTwoFactor turns two-factor sign-in on for the user name of f from
+// the page, and returns their secret, recovery codes and new session.
+func setUpTwoFactor(t *testing.T, f *fixture, name string) (string, []string, *fixture) {
 	t.Helper()
 	html := []string{"Accept", "text/html"}
-	resp, _ := post(t, f, twoFactorPath, "action=start", html...)
+	resp, _ := post(t, f, twoFactorPath, "action=start&password="+url.QueryEscape(testPassword(name)), html...)
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != twoFactorPath {
 		t.Fatalf("start: %d %v", resp.StatusCode, resp.Header)
 	}
@@ -88,7 +89,15 @@ func TestTwoFactorSignIn(t *testing.T) {
 	if !strings.Contains(body, "Off: your password alone signs you in.") || !strings.Contains(body, `value="start"`) {
 		t.Errorf("off: %s", body)
 	}
-	secret, codes, dora := setUpTwoFactor(t, dora)
+	// Setting it up takes the password, which a stolen session lacks.
+	resp, body := post(t, dora, twoFactorPath, "action=start&password=wrong", html...)
+	if resp.StatusCode != http.StatusForbidden || !strings.Contains(body, "The password is wrong.") || secretShown.MatchString(body) {
+		t.Errorf("start, wrong password: %d %s", resp.StatusCode, body)
+	}
+	if resp, _ := post(t, dora, twoFactorPath, "action=start"); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("start, no password: %d", resp.StatusCode)
+	}
+	secret, codes, dora := setUpTwoFactor(t, dora, "dora")
 	_, body = dora.do(t, "GET", twoFactorPath, html...)
 	if !strings.Contains(body, "On: after your password") || !strings.Contains(body, "10 of 10 left.") {
 		t.Errorf("on: %s", body)
@@ -103,7 +112,7 @@ func TestTwoFactorSignIn(t *testing.T) {
 		r, k, v := formBody(kv...)
 		return f.as("").send(t, "POST", loginPath, r, k, v)
 	}
-	resp, body := form("username", "dora", "password", testPassword("dora"), "next", "/docs/")
+	resp, body = form("username", "dora", "password", testPassword("dora"), "next", "/docs/")
 	m := challengeSent.FindStringSubmatch(body)
 	if resp.StatusCode != http.StatusOK || m == nil || !strings.Contains(body, "<h1>Two-factor sign-in</h1>") || cookieOf(resp, cookieName) != nil {
 		t.Fatalf("after the password: %d %s", resp.StatusCode, body)
@@ -180,7 +189,7 @@ func TestTwoFactorSignIn(t *testing.T) {
 	}
 
 	// Superadmins turn it off for those who lost their app.
-	_, _, dora = setUpTwoFactor(t, dora)
+	_, _, dora = setUpTwoFactor(t, dora, "dora")
 	resp, _ = post(t, f.as("superadmin"), usersPath, "action=two-factor-off&user=dora", html...)
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != usersPath+"?done=two-factor" {
 		t.Errorf("reset: %d %v", resp.StatusCode, resp.Header)
@@ -197,7 +206,7 @@ func TestTwoFactorSignIn(t *testing.T) {
 func TestTwoFactorLimiter(t *testing.T) {
 	ta := newTestAuth(t)
 	f := newFixtureWith(t, ta, func(c *config.Config) { c.Limiter = config.LimiterConfig{MaxFailures: 3, Window: time.Minute} })
-	_, codes, _ := setUpTwoFactor(t, f.signedIn(ta.addUser(t, "dora", "user")))
+	_, codes, _ := setUpTwoFactor(t, f.signedIn(ta.addUser(t, "dora", "user")), "dora")
 	form := func(kv ...string) (*http.Response, string) {
 		t.Helper()
 		r, k, v := formBody(kv...)
@@ -215,5 +224,41 @@ func TestTwoFactorLimiter(t *testing.T) {
 	}
 	if resp, _ := form("challenge", m[1], "code", codes[0]); resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") == "" {
 		t.Errorf("after the budget: %d", resp.StatusCode)
+	}
+}
+
+// Wrong codes count for the account as well, wherever they come from: with
+// the password, many addresses could otherwise guess codes for long.
+func TestTwoFactorCodeLimit(t *testing.T) {
+	ta := newTestAuth(t)
+	f := newFixtureWith(t, ta)
+	secret, _, _ := setUpTwoFactor(t, f.signedIn(ta.addUser(t, "dora", "user")), "dora")
+	form := func(kv ...string) (*http.Response, string) {
+		t.Helper()
+		r, k, v := formBody(kv...)
+		return f.as("").send(t, "POST", loginPath, r, k, v)
+	}
+	wrong := otherTOTP(totpOf(t, secret, 1))
+	for i := range 5 {
+		if resp, _ := form("username", "dora", "password", testPassword("dora"), "code", wrong); resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("wrong code %d: %d", i, resp.StatusCode)
+		}
+	}
+	resp, body := form("username", "dora", "password", testPassword("dora"), "code", totpOf(t, secret, 1))
+	if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") != "60" ||
+		!strings.Contains(body, "Too many wrong codes: try again in 1 minute, or sign in with a passkey.") {
+		t.Errorf("the sixth: %d %v %s", resp.StatusCode, resp.Header, body)
+	}
+	// And so after a challenge.
+	_, body = form("username", "dora", "password", testPassword("dora"))
+	m := challengeSent.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatal(body)
+	}
+	if resp, body := form("challenge", m[1], "code", totpOf(t, secret, 1)); resp.StatusCode != http.StatusTooManyRequests || !strings.Contains(body, m[1]) {
+		t.Errorf("with a challenge: %d %s", resp.StatusCode, body)
+	}
+	if n := len(f.logs.entries("login codes refused: too many wrong ones")); n != 2 {
+		t.Errorf("%d refusals logged", n)
 	}
 }

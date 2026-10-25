@@ -148,13 +148,21 @@ func (s *Server) davWays(c fiber.Ctx, urlPath string) []string {
 	return ways
 }
 
-// foldersMoved has the folder shares of the folder at the real URL path
-// from, and of those in it, follow it to to, where it moved; they end with
-// to "", as it was deleted, or once it left its home. A folder deleted by
-// other means than goftp keeps its shares, until its owner stops them.
-func (s *Server) foldersMoved(from, to string) {
+// sharesMoved has the shares of the file or folder (dir) at the real URL
+// path from, and of what is in it, follow it to to, where it moved, or end
+// with to "", as it was deleted: its links (see auth.MoveShares) and, of a
+// folder, who it is shared with (see auth.MoveFolderShares). What is
+// deleted by other means than goftp keeps its shares, until they are
+// stopped.
+func (s *Server) sharesMoved(from, to string, dir bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
 	defer cancel()
+	if err := s.auth.MoveShares(ctx, from, to); err != nil {
+		s.log.Error("move links", zap.String("path", from), zap.String("to", to), zap.Error(err))
+	}
+	if !dir {
+		return
+	}
 	if err := s.auth.MoveFolderShares(ctx, from, to); err != nil {
 		s.log.Error("move folder shares", zap.String("path", from), zap.String("to", to), zap.Error(err))
 	}

@@ -48,7 +48,7 @@ func davAs(t *testing.T, f *fixture, name string) *davClient {
 	if err != nil {
 		t.Fatal(err)
 	}
-	password, _, err := f.auth.svc.CreateAppPassword(t.Context(), u, "test")
+	password, _, err := f.auth.svc.CreateAppPassword(t.Context(), u, "test", testPassword(name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestDavSignIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	password, _, err := svc.CreateAppPassword(ctx, u, "laptop")
+	password, _, err := svc.CreateAppPassword(ctx, u, "laptop", testPassword(name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestDavSignIn(t *testing.T) {
 	}
 
 	// Revoked ones stop working, and so do all once the password changes.
-	revoked, ap, err := svc.CreateAppPassword(ctx, u, "phone")
+	revoked, ap, err := svc.CreateAppPassword(ctx, u, "phone", testPassword(name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,10 @@ func TestDavSignIn(t *testing.T) {
 	}
 
 	// Failures count against the client as wrong passwords do.
-	fresh, _, err := svc.CreateAppPassword(ctx, u, "new laptop")
+	if u, err = svc.UserNamed(ctx, name); err != nil {
+		t.Fatal(err)
+	}
+	fresh, _, err := svc.CreateAppPassword(ctx, u, "new laptop", "another long password")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -775,7 +778,8 @@ func TestSyncPage(t *testing.T) {
 	}
 
 	// A new app password is shown once, and signs in to WebDAV.
-	resp, body = syncForm("action=create&name=laptop", html...)
+	pw := "&password=" + url.QueryEscape(testPassword(name))
+	resp, body = syncForm("action=create&name=laptop"+pw, html...)
 	expectStatus(t, resp, http.StatusCreated)
 	m := regexp.MustCompile(`<code id="app-password">([a-z2-7]{4}(?:-[a-z2-7]{4}){5})</code>`).FindStringSubmatch(body)
 	if m == nil || resp.Header.Get("Cache-Control") != "no-store" || !strings.Contains(body, "<strong>laptop</strong>") {
@@ -789,7 +793,7 @@ func TestSyncPage(t *testing.T) {
 	}
 
 	// Scripts get JSON.
-	resp, body = syncForm("action=create&name=phone")
+	resp, body = syncForm("action=create&name=phone" + pw)
 	expectStatus(t, resp, http.StatusCreated)
 	var created struct {
 		ID                            int64
@@ -809,8 +813,11 @@ func TestSyncPage(t *testing.T) {
 		want    int
 		says    string
 	}{
-		{"action=create&name=", html, http.StatusBadRequest, "Name the app password"},
+		{"action=create&name=" + pw, html, http.StatusBadRequest, "Name the app password"},
 		{"action=create&name=", nil, http.StatusBadRequest, "Name the app password"},
+		// It takes the password: a stolen session alone makes none.
+		{"action=create&name=tablet", html, http.StatusForbidden, "The password is wrong."},
+		{"action=create&name=tablet&password=wrong", nil, http.StatusForbidden, "The password is wrong."},
 		{"action=revoke&id=99999", html, http.StatusNotFound, "no such app password"},
 		{"action=revoke&id=x", nil, http.StatusBadRequest, ""},
 		{"action=dance", nil, http.StatusBadRequest, ""},
@@ -834,10 +841,10 @@ func TestSyncPage(t *testing.T) {
 
 	// A user has only so many.
 	for i := 1; i < auth.MaxAppPasswords; i++ {
-		resp, _ := syncForm("action=create&name=app")
+		resp, _ := syncForm("action=create&name=app" + pw)
 		expectStatus(t, resp, http.StatusCreated)
 	}
-	if resp, body := syncForm("action=create&name=app", html...); resp.StatusCode != http.StatusConflict || !strings.Contains(body, "revoke one") {
+	if resp, body := syncForm("action=create&name=app"+pw, html...); resp.StatusCode != http.StatusConflict || !strings.Contains(body, "revoke one") {
 		t.Errorf("too many: %d %s", resp.StatusCode, body)
 	}
 

@@ -18,17 +18,24 @@ func TestAppPasswords(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := svc.CreateUser(ctx, "erin", "user"); err != nil {
+		erinTemp, err := svc.CreateUser(ctx, "erin", "user")
+		if err != nil {
 			t.Fatal(err)
 		}
 		dora, erin := userNamed(t, svc, "dora"), userNamed(t, svc, "erin")
 
 		for _, name := range []string{"", "  ", strings.Repeat("x", 65), "a\nb"} {
-			if _, _, err := svc.CreateAppPassword(ctx, dora, name); !errors.Is(err, auth.ErrInvalid) {
+			if _, _, err := svc.CreateAppPassword(ctx, dora, name, temp); !errors.Is(err, auth.ErrInvalid) {
 				t.Errorf("CreateAppPassword(%q): %v", name, err)
 			}
 		}
-		password, ap, err := svc.CreateAppPassword(ctx, dora, "  rclone on my laptop ")
+		// It takes the password: a stolen session alone makes none.
+		for _, wrong := range []string{"", "wrong password", erinTemp} {
+			if _, _, err := svc.CreateAppPassword(ctx, dora, "laptop", wrong); !errors.Is(err, auth.ErrInvalidCredentials) {
+				t.Errorf("password %q: %v", wrong, err)
+			}
+		}
+		password, ap, err := svc.CreateAppPassword(ctx, dora, "  rclone on my laptop ", temp)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -51,7 +58,7 @@ func TestAppPasswords(t *testing.T) {
 				t.Errorf("AppPasswordUser(%q, %q): %v, %v", tc.username, tc.password, u, err)
 			}
 		}
-		other, _, err := svc.CreateAppPassword(ctx, erin, "phone")
+		other, _, err := svc.CreateAppPassword(ctx, erin, "phone", erinTemp)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -70,7 +77,7 @@ func TestAppPasswords(t *testing.T) {
 		}
 
 		// Listed newest first, with when they were last used.
-		phone, _, err := svc.CreateAppPassword(ctx, dora, "phone")
+		phone, _, err := svc.CreateAppPassword(ctx, dora, "phone", temp)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -102,11 +109,11 @@ func TestAppPasswords(t *testing.T) {
 
 		// A user has only so many.
 		for i := 1; i < auth.MaxAppPasswords; i++ {
-			if _, _, err := svc.CreateAppPassword(ctx, dora, "app"); err != nil {
+			if _, _, err := svc.CreateAppPassword(ctx, dora, "app", temp); err != nil {
 				t.Fatal(i, err)
 			}
 		}
-		if _, _, err := svc.CreateAppPassword(ctx, dora, "one too many"); !errors.Is(err, auth.ErrTooMany) {
+		if _, _, err := svc.CreateAppPassword(ctx, dora, "one too many", temp); !errors.Is(err, auth.ErrTooMany) {
 			t.Errorf("over the limit: %v", err)
 		}
 
@@ -135,7 +142,12 @@ func TestAppPasswords(t *testing.T) {
 		if _, err := svc.AppPasswordUser(ctx, "erin", other); !errors.Is(err, auth.ErrNotFound) {
 			t.Errorf("after a reset: %v", err)
 		}
-		last, _, err := svc.CreateAppPassword(ctx, dora, "last")
+		// The password checked must still be the password when it is made.
+		if _, _, err := svc.CreateAppPassword(ctx, dora, "stale", temp); !errors.Is(err, auth.ErrInvalidCredentials) {
+			t.Errorf("with the password before the change: %v", err)
+		}
+		dora = userNamed(t, svc, "dora")
+		last, _, err := svc.CreateAppPassword(ctx, dora, "last", "a long new password")
 		if err != nil {
 			t.Fatal(err)
 		}

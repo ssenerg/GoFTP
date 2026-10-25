@@ -253,7 +253,12 @@ func (s *Service) FinishPasskey(ctx context.Context, u *User, token, name string
 		return nil, err
 	}
 	pk := &Passkey{UserID: u.ID, Name: name, CredentialID: cred.ID, Credential: raw}
-	if err := s.store.CreatePasskey(ctx, pk); err != nil {
+	err = s.store.CreatePasskey(ctx, pk, u.PasswordHash)
+	if errors.Is(err, ErrNotFound) {
+		// The password changed meanwhile, ending what it made.
+		return nil, ErrCeremonyGone
+	}
+	if err != nil {
 		return nil, err
 	}
 	return pk, nil

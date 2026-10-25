@@ -200,6 +200,9 @@ func (s *Server) remove(c fiber.Ctx, dirPath, name string, permanent bool) (stri
 		return "", err
 	}
 	defer release()
+	if err := sameEntry(dir, name, info); err != nil {
+		return "", err
+	}
 
 	target := path.Join(dirPath, name)
 	contents := 0
@@ -227,9 +230,7 @@ func (s *Server) remove(c fiber.Ctx, dirPath, name string, permanent bool) (stri
 	syncDir(dir)
 	// What its home holds moved to the trash, or left.
 	s.homeChanged(path.Join(realDir, name))
-	if info.IsDir() {
-		s.foldersMoved(path.Join(realDir, name), "")
-	}
+	s.sharesMoved(path.Join(realDir, name), "", info.IsDir())
 	s.log.Info("delete", zap.String("ip", c.IP()), zap.String("user", visitor(c)), zap.String("path", target),
 		zap.Bool("folder", info.IsDir()), zap.Int("contents", contents), zap.Bool("trash", id != ""))
 	return id, nil
@@ -373,9 +374,7 @@ func (s *Server) rename(c fiber.Ctx, dirPath, from, to string) error {
 			return s.openError(err)
 		}
 		syncDir(dir)
-		if info.IsDir() {
-			s.foldersMoved(path.Join(realDir, from), path.Join(realDir, to))
-		}
+		s.sharesMoved(path.Join(realDir, from), path.Join(realDir, to), info.IsDir())
 		s.log.Info("rename", zap.String("ip", c.IP()), zap.String("user", visitor(c)), zap.String("path", src), zap.String("to", dst))
 	}
 	return s.done(c, dirPath, fiber.StatusCreated, escapePath(object(dst, info.IsDir())), "renamed="+url.QueryEscape(to))

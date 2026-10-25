@@ -122,7 +122,7 @@ func TestPasskeys(t *testing.T) {
 
 		// With two-factor sign-in, no code after it: a passkey is one in
 		// itself.
-		secret, err := svc.StartTwoFactor(ctx, dora)
+		secret, err := svc.StartTwoFactor(ctx, dora, password)
 		if err != nil {
 			t.Fatal(err)
 		}

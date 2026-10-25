@@ -46,6 +46,7 @@ type Service struct {
 	fold  atomic.Value // how rules compare paths (see SetFold)
 
 	challenges challenges // sign-ins that wait for a two-factor code
+	wrongCodes wrongCodes // users' wrong two-factor codes in a row
 	ceremonies ceremonies // passkeys being made or used
 }
 
