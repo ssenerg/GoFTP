@@ -324,21 +324,31 @@ func (s *PgStore) DeleteExpiredShares(ctx context.Context) error {
 	return err
 }
 
-const uploadColumns = "id, user_id, dir, name, length, replace, temp, share_id, created_at, expires_at"
+const uploadColumns = "id, user_id, dir, name, length, replace, temp, share_id, mtime, created_at, expires_at"
 
 func scanUpload(row pgx.Row) (*Upload, error) {
-	var up Upload
-	err := row.Scan(&up.ID, &up.UserID, &up.Dir, &up.Name, &up.Length, &up.Replace, &up.Temp, &up.ShareID, &up.CreatedAt, &up.ExpiresAt)
+	var (
+		up    Upload
+		mtime *time.Time
+	)
+	err := row.Scan(&up.ID, &up.UserID, &up.Dir, &up.Name, &up.Length, &up.Replace, &up.Temp, &up.ShareID, &mtime, &up.CreatedAt, &up.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
+	}
+	if mtime != nil {
+		up.Mtime = *mtime
 	}
 	return &up, err
 }
 
 func (s *PgStore) CreateUpload(ctx context.Context, tokenHash []byte, up *Upload, keep time.Duration) error {
-	return s.db.QueryRow(ctx, `INSERT INTO uploads (token_hash, user_id, dir, name, length, replace, temp, share_id, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now() + $9::interval) RETURNING id, created_at, expires_at`,
-		tokenHash, up.UserID, up.Dir, up.Name, up.Length, up.Replace, up.Temp, up.ShareID, keep).Scan(&up.ID, &up.CreatedAt, &up.ExpiresAt)
+	var mtime *time.Time
+	if !up.Mtime.IsZero() {
+		mtime = &up.Mtime
+	}
+	return s.db.QueryRow(ctx, `INSERT INTO uploads (token_hash, user_id, dir, name, length, replace, temp, share_id, mtime, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + $10::interval) RETURNING id, created_at, expires_at`,
+		tokenHash, up.UserID, up.Dir, up.Name, up.Length, up.Replace, up.Temp, up.ShareID, mtime, keep).Scan(&up.ID, &up.CreatedAt, &up.ExpiresAt)
 }
 
 func (s *PgStore) UploadByToken(ctx context.Context, tokenHash []byte) (*Upload, error) {

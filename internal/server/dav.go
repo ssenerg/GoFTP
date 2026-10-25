@@ -28,7 +28,10 @@ import (
 // WebDAV (RFC 4918) at /.dav/, for sync apps and file managers: the same
 // files as the site, with the same rules, homes, quotas and trash, signed
 // in to with HTTP Basic authentication and an app password (see
-// auth.AppPassword). /.dav/PATH is PATH. Locks are advisory: they keep other
+// auth.AppPassword). /.dav/PATH is PATH. Files may also be sent in pieces,
+// as resumable uploads (see createUpload) that a POST to their folder
+// starts, as ownCloud Infinite Scale takes them: proxies that limit the
+// size of requests let any size through then. Locks are advisory: they keep other
 // WebDAV clients that ask from taking the same lock, and nothing else, as
 // goftp's own locks guard every change.
 const davPrefix = "/.dav"
@@ -36,14 +39,15 @@ const davPrefix = "/.dav"
 // davMethods are the methods WebDAV adds to HTTP's.
 var davMethods = []string{"PROPFIND", "PROPPATCH", "MKCOL", "COPY", "MOVE", "LOCK", "UNLOCK"}
 
-const davAllow = "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK"
+const davAllow = "OPTIONS, GET, HEAD, PUT, POST, DELETE, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK"
 
 // davBodyLimit bounds the XML bodies of WebDAV requests.
 const davBodyLimit = 64 << 10
 
 // davRoutes serves WebDAV under davPrefix.
 func (s *Server) davRoutes() {
-	methods := append([]string{fiber.MethodGet, fiber.MethodHead, fiber.MethodPut, fiber.MethodDelete, fiber.MethodOptions}, davMethods...)
+	methods := append([]string{fiber.MethodGet, fiber.MethodHead, fiber.MethodPut, fiber.MethodPost, fiber.MethodDelete, fiber.MethodOptions},
+		davMethods...)
 	s.app.Add(methods, davPrefix, s.dav)
 	s.app.Add(methods, davPrefix+"/*", s.dav)
 }
@@ -54,6 +58,9 @@ func (s *Server) dav(c fiber.Ctx) error {
 	c.Set(fiber.HeaderCacheControl, "no-store")
 	if c.Method() == fiber.MethodOptions {
 		c.Set(fiber.HeaderAllow, davAllow)
+		c.Set("Tus-Resumable", tusVersion)
+		c.Set("Tus-Version", tusVersion)
+		c.Set("Tus-Extension", tusExtensions)
 		return c.SendStatus(fiber.StatusOK)
 	}
 	if err := s.davSignIn(c); err != nil {
@@ -82,6 +89,15 @@ func (s *Server) dav(c fiber.Ctx) error {
 		return s.davGet(c, urlPath)
 	case fiber.MethodPut:
 		return s.davPut(c, urlPath)
+	case fiber.MethodPost:
+		// A resumable upload into the folder.
+		switch {
+		case c.Get("Tus-Resumable") == "":
+			return fiber.ErrMethodNotAllowed
+		case hidden(urlPath):
+			return fiber.ErrForbidden
+		}
+		return s.createUpload(c, urlPath, nil, true)
 	case fiber.MethodDelete:
 		return s.davDelete(c, urlPath)
 	}

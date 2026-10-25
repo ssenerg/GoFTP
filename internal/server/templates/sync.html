@@ -84,8 +84,8 @@
     <h2>Set up an app</h2>
     <details>
       <summary>rclone (Linux, macOS, Windows)</summary>
-      <p>Add goftp as a remote, then sync a folder both ways. The first run needs <code>--resync</code>; run the second line again whenever you like, e.g. from cron.</p>
-      <pre><code id="rclone-steps">rclone config create goftp webdav url={{.URL}} vendor=owncloud user={{.Username}} pass=APP-PASSWORD --obscure
+      <p>Add goftp as a remote, then sync a folder both ways. The first run needs <code>--resync</code>; run the second line again whenever you like, e.g. from cron. With <code>vendor=infinitescale</code>, rclone sends files in 10 MiB pieces, so files of any size get through proxies that limit requests, and keeps their times.</p>
+      <pre><code id="rclone-steps">rclone config create goftp webdav url={{.URL}} vendor=infinitescale user={{.Username}} pass=APP-PASSWORD --obscure
 rclone bisync ~/goftp goftp: --exclude ".*" --exclude ".*/**" --resync
 rclone bisync ~/goftp goftp: --exclude ".*" --exclude ".*/**"</code></pre>
       <p><button type="button" class="btn small" data-copy="rclone-steps" hidden><svg class="i" aria-hidden="true"><use href="#i-copy"/></svg>Copy</button></p>

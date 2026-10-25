@@ -90,11 +90,14 @@ func setExpires(c fiber.Ctx, up *auth.Upload) {
 
 // createUpload starts a resumable upload into the folder at dirPath (tus
 // creation). Upload-Length gives the file's size; Upload-Metadata its name
-// as filename and, with replace set to 1, that it may replace a file of
-// that name. Everything is checked as for other uploads, so a doomed
-// upload is refused before its data is sent. Through the upload link sh,
-// it has the link's rights, and a taken name gets a number instead.
-func (s *Server) createUpload(c fiber.Ctx, dirPath string, sh *auth.Share) error {
+// as filename, with replace set to 1 that it may replace a file of that
+// name, and its modification time as mtime, in seconds since 1970. With
+// overwrite, as WebDAV clients expect of uploads, it replaces a file of
+// that name unless If-None-Match: * says not to. Everything is checked as
+// for other uploads, so a doomed upload is refused before its data is
+// sent. Through the upload link sh, it has the link's rights, and a taken
+// name gets a number instead.
+func (s *Server) createUpload(c fiber.Ctx, dirPath string, sh *auth.Share, overwrite bool) error {
 	if err := tusRequest(c); err != nil {
 		return err
 	}
@@ -111,6 +114,9 @@ func (s *Server) createUpload(c fiber.Ctx, dirPath string, sh *auth.Share) error
 		return explain(fiber.ErrBadRequest, badName)
 	}
 	replace := meta["replace"] == "1" && sh == nil
+	if overwrite {
+		replace = sh == nil && c.Get(fiber.HeaderIfNoneMatch) != "*"
+	}
 	if limit := int64(s.cfg.Upload.MaxSize); limit > 0 && length > limit {
 		return fiber.ErrRequestEntityTooLarge
 	}
@@ -158,6 +164,9 @@ func (s *Server) createUpload(c fiber.Ctx, dirPath string, sh *auth.Share) error
 	}
 
 	up := &auth.Upload{Dir: dirPath, Name: name, Length: length, Replace: replace, Temp: tempPrefix + rand.Text() + partialSuffix}
+	if mtime, ok := unixTime(meta["mtime"]); ok {
+		up.Mtime = mtime
+	}
 	if u := userOf(c); u != nil {
 		up.UserID = u.ID
 	}
@@ -190,7 +199,8 @@ func (s *Server) createUpload(c fiber.Ctx, dirPath string, sh *auth.Share) error
 	}
 	s.log.Info("upload started", zap.String("ip", c.IP()), zap.String("user", visitor(c)), zap.String("path", urlPath),
 		zap.Int64("length", length), zap.Int64("upload", up.ID))
-	c.Location(uploadsPrefix + token)
+	// Absolute, as some clients take it (rclone).
+	c.Location(c.BaseURL() + uploadsPrefix + token)
 	setExpires(c, up)
 	if length == 0 {
 		// Nothing will follow: the file is complete already.
@@ -202,10 +212,16 @@ func (s *Server) createUpload(c fiber.Ctx, dirPath string, sh *auth.Share) error
 }
 
 // upload finds the upload of a request to /.uploads/TOKEN: one the visitor
-// started, signed in as now or anonymously. Others look missing.
+// started, signed in as now or anonymously. Others look missing. Sync apps
+// that started theirs over WebDAV sign in as they do there.
 func (s *Server) upload(c fiber.Ctx) (*auth.Upload, error) {
 	if err := tusRequest(c); err != nil {
 		return nil, err
+	}
+	if userOf(c) == nil && strings.HasPrefix(strings.ToLower(c.Get(fiber.HeaderAuthorization)), "basic ") {
+		if err := s.davSignIn(c); err != nil {
+			return nil, err
+		}
 	}
 	ctx, cancel := dbContext(c)
 	defer cancel()
@@ -448,6 +464,11 @@ func (s *Server) completeUpload(c fiber.Ctx, dir *os.Root, up *auth.Upload, righ
 	}
 	// Linking leaves the temp file behind.
 	_ = dir.Remove(up.Temp)
+	if !up.Mtime.IsZero() {
+		if err := dir.Chtimes(name, time.Now(), up.Mtime); err != nil {
+			s.log.Warn("keep modification time", zap.String("path", path.Join(up.Dir, name)), zap.Error(err))
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
 	defer cancel()
 	if err := s.auth.DeleteUpload(ctx, up.ID); err != nil {

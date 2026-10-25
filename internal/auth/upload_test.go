@@ -26,6 +26,18 @@ func TestUploads(t *testing.T) {
 				t.Errorf("UploadByToken(%q): %v", bad, err)
 			}
 		}
+		if !got.Mtime.IsZero() {
+			t.Errorf("a time without one: %v", got.Mtime)
+		}
+		// The modification time the file gets.
+		timed := &auth.Upload{UserID: 7, Dir: "/d", Name: "b.bin", Length: 1, Temp: ".goftp-B.upload", Mtime: time.Unix(1700000000, 0)}
+		timedToken, err := svc.CreateUpload(ctx, timed, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := svc.UploadByToken(ctx, timedToken); err != nil || !got.Mtime.Equal(time.Unix(1700000000, 0)) {
+			t.Errorf("with a time: %+v %v", got, err)
+		}
 
 		// One writer at a time; a claim that ran out can be taken over.
 		claim := func(writer string, lease time.Duration) bool {

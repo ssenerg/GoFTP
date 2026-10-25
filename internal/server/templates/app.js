@@ -851,7 +851,9 @@
       let res;
       const patching = url && offset !== null;
       if (!url) {
-        const meta = "filename " + base64(file.name) + (replacing ? ",replace " + base64("1") : "");
+        let meta = "filename " + base64(file.name) + (replacing ? ",replace " + base64("1") : "");
+        // The file keeps when it was last changed.
+        if (file.lastModified > 0) meta += ",mtime " + base64(String(Math.floor(file.lastModified / 1000)));
         res = await request(t, "POST", dir, { "Upload-Length": String(file.size), "Upload-Metadata": meta });
         if (res.status === 201) {
           url = new URL(res.getResponseHeader("Location"), location.href).pathname;

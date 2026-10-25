@@ -211,7 +211,7 @@ func (s *Server) postForm(c fiber.Ctx) error {
 		return fiber.ErrForbidden
 	}
 	if c.Get("Tus-Resumable") != "" {
-		return s.createUpload(c, urlPath, nil)
+		return s.createUpload(c, urlPath, nil, false)
 	}
 	switch mediaType, _, _ := mime.ParseMediaType(c.Get(fiber.HeaderContentType)); mediaType {
 	case fiber.MIMEApplicationForm, fiber.MIMEApplicationJSON:
@@ -314,7 +314,7 @@ func (s *Server) linkUpload(c fiber.Ctx, tus bool) error {
 		return explain(fiber.ErrForbidden, "This link needs its password: open it first.")
 	}
 	if tus {
-		return s.createUpload(c, sh.Path, sh)
+		return s.createUpload(c, sh.Path, sh, false)
 	}
 	_, params, err := mime.ParseMediaType(c.Get(fiber.HeaderContentType))
 	if err != nil || params["boundary"] == "" {

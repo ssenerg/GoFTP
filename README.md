@@ -244,7 +244,8 @@ the creation, termination and expiration extensions), so tus clients such
 as [tus-js-client](https://github.com/tus/tus-js-client) or
 [tuspy](https://github.com/tus/tus-py-client) can upload to a folder
 (`https://host/dir/` as the endpoint, the file's name as `filename` in its
-metadata, and `replace` set to `1` to replace an existing file). With curl:
+metadata, `replace` set to `1` to replace an existing file, and `mtime`, in
+seconds since 1970, for the modification time it keeps). With curl:
 
 ```sh
 auth="Authorization: Bearer $TOKEN"
@@ -413,15 +414,25 @@ curl -H "Authorization: Bearer $TOKEN" -d action=create -d name=laptop https://h
 curl -H "Authorization: Bearer $TOKEN" -d action=revoke -d id=1 https://host/.sync/
 ```
 
-With [rclone](https://rclone.org), which keeps modification times with
-`vendor=owncloud`, a folder syncs both ways like this; the first run needs
-`--resync`, and the second line can then run from cron:
+With [rclone](https://rclone.org), a folder syncs both ways like this; the
+first run needs `--resync`, and the second line can then run from cron:
 
 ```sh
-rclone config create goftp webdav url=https://host/.dav/home/bob/ vendor=owncloud user=bob pass=APP-PASSWORD --obscure
+rclone config create goftp webdav url=https://host/.dav/home/bob/ vendor=infinitescale user=bob pass=APP-PASSWORD --obscure
 rclone bisync ~/goftp goftp: --exclude ".*" --exclude ".*/**" --resync
 rclone bisync ~/goftp goftp: --exclude ".*" --exclude ".*/**"
 ```
+
+With `vendor=infinitescale`, rclone sends files as ownCloud Infinite Scale
+takes them: as resumable uploads ([tus](https://tus.io), as the browser
+does) that a POST to the folder starts, in 10 MiB pieces, so that files of
+any size get through proxies that limit the size of requests. Those
+pieces sign in with the same app password, at the absolute `Location`
+the POST answers; an upload replaces a file of its name unless
+`If-None-Match: *` says not to, and `mtime` in `Upload-Metadata` (in
+seconds since 1970) becomes the file's modification time, as it does for
+the browser's uploads. `vendor=owncloud` works too, sending each file in
+one request.
 
 FolderSync (Android), GoodSync, Mountain Duck and Cyberduck take the same
 address, username and app password as a WebDAV account; Finder opens it
@@ -441,10 +452,9 @@ much room a home has left (RFC 4331). Limits:
   folder that a MOVE or COPY replaces goes to the trash, once the move or
   copy worked. `If-Match` and `If-Unmodified-Since` make changes depend on
   the ETag or time a client saw.
-- WebDAV sends each file in one request, where the browser sends large
-  ones in pieces: behind a proxy that limits the size of requests
-  (Cloudflare: 100 MB on its Free and Pro plans), larger files cannot be
-  uploaded over WebDAV.
+- Apps other than rclone with `vendor=infinitescale` send each file in one
+  request: behind a proxy that limits the size of requests (Cloudflare:
+  100 MB on its Free and Pro plans), they cannot upload larger files.
 
 Wrong app passwords count against the client's sign-in budget
 (`limiter.*`).
