@@ -23,6 +23,7 @@ type Store struct {
 	apps     map[string]*auth.AppPassword // by token hash
 	folders  map[int64]*auth.FolderShare  // by ID
 	factors  map[int64]*twoFactor         // by user ID
+	passkeys map[int64]*auth.Passkey      // by ID
 }
 
 // twoFactor is what is kept of a user's two-factor sign-in.
@@ -48,7 +49,7 @@ var _ auth.Store = (*Store)(nil)
 func NewStore() *Store {
 	return &Store{users: make(map[int64]*auth.User), sessions: make(map[string]session), shares: make(map[string]*auth.Share),
 		uploads: make(map[string]*upload), apps: make(map[string]*auth.AppPassword), folders: make(map[int64]*auth.FolderShare),
-		factors: make(map[int64]*twoFactor)}
+		factors: make(map[int64]*twoFactor), passkeys: make(map[int64]*auth.Passkey)}
 }
 
 // NewService returns a service with an empty store and the default policy.
@@ -117,7 +118,87 @@ func (s *Store) SetPassword(_ context.Context, userID int64, passwordHash string
 	s.deleteApps(userID)
 	if mustChange {
 		s.deleteShares(userID)
+		s.deletePasskeys(userID)
 	}
+	return nil
+}
+
+func (s *Store) deletePasskeys(userID int64) {
+	for id, pk := range s.passkeys {
+		if pk.UserID == userID {
+			delete(s.passkeys, id)
+		}
+	}
+}
+
+func (s *Store) UserByID(_ context.Context, id int64) (*auth.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[id]
+	if !ok {
+		return nil, auth.ErrNotFound
+	}
+	c := *u
+	return &c, nil
+}
+
+func (s *Store) CreatePasskey(_ context.Context, pk *auth.Passkey) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.users[pk.UserID]; !ok {
+		return auth.ErrNotFound
+	}
+	n := 0
+	for _, other := range s.passkeys {
+		if bytes.Equal(other.CredentialID, pk.CredentialID) {
+			return auth.ErrExists
+		}
+		if other.UserID == pk.UserID {
+			n++
+		}
+	}
+	if n >= auth.MaxPasskeys {
+		return auth.ErrTooMany
+	}
+	s.nextID++
+	pk.ID, pk.CreatedAt = s.nextID, time.Now()
+	c := *pk
+	s.passkeys[pk.ID] = &c
+	return nil
+}
+
+func (s *Store) Passkeys(_ context.Context, userID int64) ([]auth.Passkey, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []auth.Passkey
+	for _, pk := range s.passkeys {
+		if pk.UserID == userID {
+			out = append(out, *pk)
+		}
+	}
+	slices.SortFunc(out, func(a, b auth.Passkey) int { return cmp.Compare(a.ID, b.ID) })
+	return out, nil
+}
+
+func (s *Store) UsePasskey(_ context.Context, id int64, credential []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pk, ok := s.passkeys[id]
+	if !ok {
+		return auth.ErrNotFound
+	}
+	pk.Credential, pk.LastUsedAt = credential, time.Now()
+	return nil
+}
+
+func (s *Store) DeletePasskey(_ context.Context, userID, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pk, ok := s.passkeys[id]
+	if !ok || pk.UserID != userID {
+		return auth.ErrNotFound
+	}
+	delete(s.passkeys, id)
 	return nil
 }
 
@@ -248,6 +329,7 @@ func (s *Store) DeleteUser(_ context.Context, userID int64) error {
 	}
 	delete(s.users, userID)
 	delete(s.factors, userID)
+	s.deletePasskeys(userID)
 	s.deleteSessions(userID)
 	s.deleteShares(userID)
 	s.deleteApps(userID)

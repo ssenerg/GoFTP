@@ -48,6 +48,10 @@ func (s *PgStore) UserByName(ctx context.Context, username string) (*User, error
 	return scanUser(s.db.QueryRow(ctx, "SELECT "+userColumns+" FROM users WHERE username = $1", username))
 }
 
+func (s *PgStore) UserByID(ctx context.Context, id int64) (*User, error) {
+	return scanUser(s.db.QueryRow(ctx, "SELECT "+userColumns+" FROM users WHERE id = $1", id))
+}
+
 func (s *PgStore) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := s.db.Query(ctx, "SELECT "+userColumns+" FROM users ORDER BY username")
 	if err != nil {
@@ -79,7 +83,10 @@ func (s *PgStore) SetPassword(ctx context.Context, userID int64, passwordHash st
 		if _, err = tx.Exec(ctx, "DELETE FROM app_passwords WHERE user_id = $1", userID); err != nil || !mustChange {
 			return err
 		}
-		_, err = tx.Exec(ctx, "DELETE FROM shares WHERE created_by = $1", userID)
+		if _, err = tx.Exec(ctx, "DELETE FROM shares WHERE created_by = $1", userID); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, "DELETE FROM passkeys WHERE user_id = $1", userID)
 		return err
 	})
 }
@@ -337,6 +344,65 @@ func setRecoveryCodes(ctx context.Context, tx pgx.Tx, userID int64, hashes [][]b
 		return err
 	}
 	_, err := tx.Exec(ctx, "INSERT INTO recovery_codes (user_id, code_hash) SELECT $1, unnest($2::bytea[])", userID, hashes)
+	return err
+}
+
+func (s *PgStore) CreatePasskey(ctx context.Context, pk *Passkey) error {
+	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		// The row lock serializes a user's passkeys, so they cannot exceed
+		// the limit together.
+		if _, err := tx.Exec(ctx, "SELECT 1 FROM users WHERE id = $1 FOR UPDATE", pk.UserID); err != nil {
+			return err
+		}
+		var n int
+		if err := tx.QueryRow(ctx, "SELECT count(*) FROM passkeys WHERE user_id = $1", pk.UserID).Scan(&n); err != nil {
+			return err
+		}
+		if n >= MaxPasskeys {
+			return ErrTooMany
+		}
+		err := tx.QueryRow(ctx, `INSERT INTO passkeys (user_id, name, credential_id, credential) VALUES ($1, $2, $3, $4)
+			ON CONFLICT (credential_id) DO NOTHING RETURNING id, created_at`, pk.UserID, pk.Name, pk.CredentialID, pk.Credential).
+			Scan(&pk.ID, &pk.CreatedAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrExists
+		}
+		return err
+	})
+}
+
+func (s *PgStore) Passkeys(ctx context.Context, userID int64) ([]Passkey, error) {
+	rows, err := s.db.Query(ctx, `SELECT id, user_id, name, credential_id, credential, created_at, last_used_at
+		FROM passkeys WHERE user_id = $1 ORDER BY created_at, id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (Passkey, error) {
+		var (
+			pk       Passkey
+			lastUsed *time.Time
+		)
+		err := row.Scan(&pk.ID, &pk.UserID, &pk.Name, &pk.CredentialID, &pk.Credential, &pk.CreatedAt, &lastUsed)
+		if lastUsed != nil {
+			pk.LastUsedAt = *lastUsed
+		}
+		return pk, err
+	})
+}
+
+func (s *PgStore) UsePasskey(ctx context.Context, id int64, credential []byte) error {
+	tag, err := s.db.Exec(ctx, "UPDATE passkeys SET credential = $2, last_used_at = now() WHERE id = $1", id, credential)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = ErrNotFound
+	}
+	return err
+}
+
+func (s *PgStore) DeletePasskey(ctx context.Context, userID, id int64) error {
+	tag, err := s.db.Exec(ctx, "DELETE FROM passkeys WHERE id = $1 AND user_id = $2", id, userID)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = ErrNotFound
+	}
 	return err
 }
 

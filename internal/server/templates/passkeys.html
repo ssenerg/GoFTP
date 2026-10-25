@@ -1,0 +1,69 @@
+{{define "passkeys"}}{{template "head" .}}
+<body>
+{{template "topbar" .}}
+<main class="container narrow">
+  <div class="head">
+    <div>
+      <h1>Passkeys</h1>
+      <p class="summary">Sign in without your password, with your fingerprint, your face or a PIN on your phone, computer or security key. A passkey works only on this site, and nobody can steal it from a page made to look like it.</p>
+    </div>
+  </div>
+
+  {{with .Notice}}<div class="alert success banner" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg><span>{{.}}</span></div>{{end}}
+  {{with .Error}}<div class="alert error banner" role="alert"><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>{{.}}</span></div>{{end}}
+
+  <section class="card admin-form">
+    <h2>Add a passkey</h2>
+    <p class="passkey-unsupported faint" hidden>This browser cannot make passkeys.</p>
+    <form id="add-passkey" class="inline-form">
+      <input type="hidden" name="username" value="{{.User}}" autocomplete="username">
+      <label class="field"><span>Name</span>
+        <input name="name" required maxlength="64" placeholder="e.g. iPhone" autocomplete="off">
+      </label>
+      <label class="field"><span>Your password</span>
+        <span class="pw"><input type="password" name="password" autocomplete="current-password" required></span>
+      </label>
+      <button type="submit" class="btn primary">Add</button>
+    </form>
+    <p class="popover-error" role="alert" hidden></p>
+  </section>
+
+  <div class="card">
+    {{if .Keys}}
+    <table class="files list-table">
+      <thead><tr><th>Passkey</th><th>Added</th><th>Last used</th><th class="act"><span class="vh">Delete</span></th></tr></thead>
+      <tbody>
+        {{range .Keys}}
+        <tr>
+          <td class="name"><span class="app-cell"><svg class="i" aria-hidden="true"><use href="#i-passkey"/></svg><span>{{.Name}}</span></span></td>
+          <td><span class="cell-label">Added </span><time datetime="{{.CreatedISO}}">{{.Created}}</time></td>
+          <td><span class="cell-label">Last used </span>{{if .LastUsed}}<time datetime="{{.LastUsedISO}}">{{.LastUsed}}</time>{{else}}<span class="faint">never</span>{{end}}</td>
+          <td class="act">
+            <details class="confirm">
+              <summary class="icon-btn" aria-label="Delete the passkey {{.Name}}" title="Delete"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg></summary>
+              <form method="post" action="/.auth/passkeys" class="popover">
+                <input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="{{.ID}}">
+                <p>Delete the passkey <strong>{{.Name}}</strong>? It no longer signs you in.</p>
+                <div class="popover-actions"><button type="submit" class="btn danger small">Delete</button></div>
+              </form>
+            </details>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <div class="empty">
+      <svg class="i" aria-hidden="true"><use href="#i-passkey"/></svg>
+      <p>You have no passkeys.</p>
+      <p>Add one above, on each device you sign in from.</p>
+    </div>
+    {{end}}
+  </div>
+</main>
+{{template "footer" .}}
+{{template "icons"}}
+{{script}}
+</body>
+</html>
+{{end}}

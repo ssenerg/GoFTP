@@ -73,7 +73,7 @@ access to the database:
 ```sh
 goftp user add bob --role operator   # prints a temporary password
 goftp user list
-goftp user passwd bob                # new temporary password, ends bob's sessions
+goftp user passwd bob                # new temporary password, ends bob's sessions and passkeys
 goftp user two-factor-off bob        # for when he lost his app and recovery codes
 goftp user role bob admin
 goftp user quota bob 10GiB           # how much his home may hold; none, or default
@@ -83,6 +83,21 @@ goftp user delete bob                # their home goes to the trash
 New and reset passwords are temporary: after signing in, users can do
 nothing but choose their own password (at least 12 characters), which ends
 all their other sessions.
+
+### Passkeys
+
+Users can sign in without their password, with a passkey: a key that their
+phone, computer or security key keeps and unlocks with a fingerprint, their
+face or a PIN. They add one under **Passkeys** in their account menu,
+confirming with their password, on each device (up to 10), and then pick
+**Sign in with a passkey** on the sign-in page, or the passkey the browser
+offers under the username. A passkey works only on the site it was made on,
+by host name (as a proxy passes the `Host` header on), so a page made to
+look like it cannot use it. It is a second factor in itself: two-factor
+sign-in asks no code after one. A new temporary password (`goftp user
+passwd`, or **Users**) deletes the user's passkeys too, as after a break-in;
+changing one's own password keeps them. Browsers need a secure page for
+passkeys: HTTPS, or `http://localhost`.
 
 ### Two-factor sign-in
 
@@ -535,7 +550,7 @@ Wrong app passwords count against the client's sign-in budget
   sends `X-Forwarded-Proto`) the session cookie is `Secure` and `__Host-`
   prefixed, and HSTS is sent.
 - Passwords are hashed with Argon2id; only SHA-256 hashes of session tokens
-  and recovery codes are stored. Two-factor secrets are stored as they
+  and recovery codes are stored, and of passkeys only their public keys. Two-factor secrets are stored as they
   are, as codes are made from them: whoever reads the database can make
   codes, but still needs the password.
 - Failed sign-ins (and wrong current passwords) are rate limited per client

@@ -84,9 +84,11 @@ type Upload struct {
 type Store interface {
 	CreateUser(ctx context.Context, username, passwordHash string) (int64, error)
 	UserByName(ctx context.Context, username string) (*User, error)
+	UserByID(ctx context.Context, id int64) (*User, error)
 	ListUsers(ctx context.Context) ([]User, error)
 	// SetPassword also ends all of the user's sessions and app passwords
-	// and, for a temporary password (mustChange), their share links.
+	// and, for a temporary password (mustChange), their share links and
+	// passkeys.
 	SetPassword(ctx context.Context, userID int64, passwordHash string, mustChange bool) error
 	// DeleteUser also deletes the user's sessions, app passwords and share
 	// links.
@@ -148,6 +150,17 @@ type Store interface {
 	// SetRecoveryCodes replaces userID's recovery codes with those of
 	// hashes.
 	SetRecoveryCodes(ctx context.Context, userID int64, hashes [][]byte) error
+
+	// CreatePasskey stores pk and sets its ID and CreatedAt; ErrTooMany if
+	// its user has MaxPasskeys, ErrExists if its credential is stored
+	// already.
+	CreatePasskey(ctx context.Context, pk *Passkey) error
+	// Passkeys lists userID's passkeys, oldest first.
+	Passkeys(ctx context.Context, userID int64) ([]Passkey, error)
+	// UsePasskey notes that the passkey id was used, now with credential.
+	UsePasskey(ctx context.Context, id int64, credential []byte) error
+	// DeletePasskey deletes userID's passkey id (ErrNotFound if none).
+	DeletePasskey(ctx context.Context, userID, id int64) error
 
 	// CreateSession starts a session for u, unless u was deleted or changed
 	// password since it was read (ErrNotFound). It may drop the user's

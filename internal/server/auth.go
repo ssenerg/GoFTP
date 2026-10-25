@@ -248,18 +248,10 @@ func (s *Server) readFormValues(c fiber.Ctx) (url.Values, bool, error) {
 	if !isJSON && mediaType != fiber.MIMEApplicationForm {
 		return nil, false, fiber.ErrUnsupportedMediaType
 	}
-	body := s.requestBody(c)
-	// Unlike an upload, a form has to arrive within one read timeout, so a
-	// client trickling it cannot hold the connection.
-	body.deadline = time.Now().Add(body.timeout)
-	data, err := io.ReadAll(io.LimitReader(body, maxFormSize+1))
+	data, err := s.readSmallBody(c)
 	if err != nil {
-		return nil, isJSON, s.uploadError(body, err)
+		return nil, isJSON, err
 	}
-	if len(data) > maxFormSize {
-		return nil, isJSON, fiber.ErrRequestEntityTooLarge
-	}
-	s.finishBody(c, body)
 
 	if !isJSON {
 		values, err := url.ParseQuery(string(data))
@@ -288,6 +280,23 @@ func (s *Server) readFormValues(c fiber.Ctx) (url.Values, bool, error) {
 		}
 	}
 	return values, true, nil
+}
+
+// readSmallBody reads a body of up to maxFormSize, such as a form.
+func (s *Server) readSmallBody(c fiber.Ctx) ([]byte, error) {
+	body := s.requestBody(c)
+	// Unlike an upload, a form has to arrive within one read timeout, so a
+	// client trickling it cannot hold the connection.
+	body.deadline = time.Now().Add(body.timeout)
+	data, err := io.ReadAll(io.LimitReader(body, maxFormSize+1))
+	if err != nil {
+		return nil, s.uploadError(body, err)
+	}
+	if len(data) > maxFormSize {
+		return nil, fiber.ErrRequestEntityTooLarge
+	}
+	s.finishBody(c, body)
+	return data, nil
 }
 
 // signInsPerMinute bounds a user's successful password checks: hashing

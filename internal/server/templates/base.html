@@ -440,6 +440,10 @@
   .qr-key code { overflow-wrap: anywhere; font-size: 14px; letter-spacing: 0.06em; }
   .recovery-codes { display: grid; grid-template-columns: repeat(2, max-content); gap: 4px 24px; margin: 0; padding: 0; list-style: none; }
   .recovery-codes code { font-size: 15px; letter-spacing: 0.04em; }
+  .passkey-signin { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
+  .passkey-signin[hidden] { display: none; }
+  .or { display: flex; align-items: center; gap: 12px; color: var(--faint); font-size: 13px; }
+  .or::before, .or::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
   .shares-section { margin-top: 28px; }
   .shares-section:first-of-type { margin-top: 0; }
   .shares-section > h2 { margin-bottom: 10px; font-size: 16px; }
@@ -780,6 +784,7 @@
       {{if .Admin}}<a href="/.admin/users"><svg class="i" aria-hidden="true"><use href="#i-users"/></svg>Users and rules</a>{{end}}
       <a href="/.sync/"><svg class="i" aria-hidden="true"><use href="#i-sync"/></svg>Sync</a>
       <a href="/.auth/password"><svg class="i" aria-hidden="true"><use href="#i-key"/></svg>Change password</a>
+      <a href="/.auth/passkeys"><svg class="i" aria-hidden="true"><use href="#i-passkey"/></svg>Passkeys</a>
       <a href="/.auth/two-factor"><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg>Two-factor sign-in</a>
       <form method="post" action="/.auth/logout"><button type="submit"><svg class="i" aria-hidden="true"><use href="#i-logout"/></svg>Sign out</button></form>
     </div>
@@ -822,6 +827,7 @@
   <symbol id="i-audio" viewBox="0 0 24 24"><path d="M9 18V5.5l11-2V16"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/></symbol>
   <symbol id="i-archive" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9M10 13h4"/></symbol>
   <symbol id="i-code" viewBox="0 0 24 24"><path d="m15.5 17 5-5-5-5m-7 0-5 5 5 5"/></symbol>
+  <symbol id="i-passkey" viewBox="0 0 24 24"><circle cx="9" cy="7.5" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 10-5.5"/><circle cx="17" cy="13" r="2.5"/><path d="M17 15.5V21m0-2.5h2"/></symbol>
   <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4.5 6h.01M4.5 12h.01M4.5 18h.01" stroke-width="2.6"/></symbol>
   <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>
   <symbol id="i-left" viewBox="0 0 24 24"><path d="m14.5 6-6 6 6 6"/></symbol>

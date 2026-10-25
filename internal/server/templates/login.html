@@ -24,7 +24,7 @@
       {{with .Error}}<div class="alert error" role="alert"><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>{{.}}</span></div>{{end}}
       <input type="hidden" name="next" value="{{.Next}}">
       <label class="field"><span>Username</span>
-        <input name="username" value="{{.Username}}" autocomplete="username" autocapitalize="none" spellcheck="false" required{{if not .Username}} autofocus{{end}}>
+        <input name="username" value="{{.Username}}" autocomplete="username webauthn" autocapitalize="none" spellcheck="false" required{{if not .Username}} autofocus{{end}}>
       </label>
       <label class="field"><span>Password</span>
         <span class="pw"><input type="password" name="password" autocomplete="current-password" required{{if .Username}} autofocus{{end}}></span>
@@ -32,6 +32,11 @@
       </label>
       <button type="submit" class="btn primary block">Sign in</button>
     </form>
+    <div class="passkey-signin" hidden>
+      <p class="or"><span>or</span></p>
+      <button type="button" class="btn block" id="passkey-signin"><svg class="i" aria-hidden="true"><use href="#i-passkey"/></svg>Sign in with a passkey</button>
+      <p class="popover-error" role="alert" hidden></p>
+    </div>
   </div>
   <p class="auth-note">No account yet? Ask your administrator to create one.</p>
   {{end}}
