@@ -23,7 +23,8 @@
       <a class="btn primary" href="{{.Download}}" download><svg class="i" aria-hidden="true"><use href="#i-download"/></svg>Download</a>
     </div>
   </div>
-  <div class="card stage{{if eq .Kind "pdf"}} stage-pdf{{end}}" id="stage" data-folder="{{.Folder}}">
+  {{with .Next}}{{with .Src}}<link rel="prefetch" href="{{.}}" as="image">{{end}}{{end}}
+  <div class="card stage{{if eq .Kind "pdf"}} stage-pdf{{end}}" id="stage" data-folder="{{.Folder}}" data-kind="{{.Kind}}">
     {{if eq .Kind "image"}}<img src="{{.Src}}" alt="{{.Name}}">
     {{else if eq .Kind "video"}}<video src="{{.Src}}" controls preload="metadata"></video>
     {{else if eq .Kind "audio"}}<audio src="{{.Src}}" controls preload="metadata"></audio>

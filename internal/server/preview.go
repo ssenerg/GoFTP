@@ -155,10 +155,13 @@ type viewerPage struct {
 	Prev, Next *viewerLink
 }
 
-type viewerLink struct{ Name, Href string }
+// viewerLink leads to another file of the folder in the viewer; Src is the
+// file itself, for pictures, to fetch ahead.
+type viewerLink struct{ Name, Href, Src string }
 
 // serveViewer shows the file f at urlPath in a page of its own, with links
-// to the previous and next files of its folder that can be shown too.
+// to the previous and next files of its folder that can be shown too, in
+// the order the folder was listed in (?sort and ?order).
 func (s *Server) serveViewer(c fiber.Ctx, f *os.File, info fs.FileInfo, urlPath string, at fileAt) error {
 	name := path.Base(urlPath)
 	ctype, kind := inlineType(f, name)
@@ -174,14 +177,19 @@ func (s *Server) serveViewer(c fiber.Ctx, f *os.File, info fs.FileInfo, urlPath 
 	if ctype != "" {
 		v.Kind = kind
 	}
-	v.Position, v.Prev, v.Next = s.around(path.Dir(urlPath), name, at)
+	col, desc := sortOrder(c)
+	if q := sortQuery(col, desc); q != "" {
+		v.Folder += "?" + q
+	}
+	v.Position, v.Prev, v.Next = s.around(path.Dir(urlPath), name, at, col, desc)
 	return s.render(c, fiber.StatusOK, "viewer", v)
 }
 
 // around places the file name in its folder dirPath among the files that
-// can be shown, as the folder lists them: its position, and the files
-// before and after it. Folders the visitor may not list place it nowhere.
-func (s *Server) around(dirPath, name string, at fileAt) (string, *viewerLink, *viewerLink) {
+// can be shown, as the folder lists them by col: its position, and the
+// files before and after it. Folders the visitor may not list place it
+// nowhere.
+func (s *Server) around(dirPath, name string, at fileAt, col string, desc bool) (string, *viewerLink, *viewerLink) {
 	d, _, dirReal, err := s.lookup(dirPath, at.allow)
 	if err != nil {
 		return "", nil, nil
@@ -192,7 +200,11 @@ func (s *Server) around(dirPath, name string, at fileAt) (string, *viewerLink, *
 		return "", nil, nil
 	}
 	shown := slices.DeleteFunc(items, func(it listItem) bool { return it.IsDir || it.Preview == "" })
-	sortItems(shown, "name", false)
+	sortItems(shown, col, desc)
+	view := "?view"
+	if q := sortQuery(col, desc); q != "" {
+		view += "&" + q
+	}
 	i := slices.IndexFunc(shown, func(it listItem) bool { return it.Name == name })
 	if i < 0 {
 		return "", nil, nil
@@ -201,7 +213,12 @@ func (s *Server) around(dirPath, name string, at fileAt) (string, *viewerLink, *
 		if j < 0 || j >= len(shown) {
 			return nil
 		}
-		return &viewerLink{Name: shown[j].Name, Href: escapePath(at.base+path.Join(path.Dir(at.rel), shown[j].Name)) + "?view"}
+		href := escapePath(at.base + path.Join(path.Dir(at.rel), shown[j].Name))
+		l := &viewerLink{Name: shown[j].Name, Href: href + view}
+		if shown[j].Preview == "image" {
+			l.Src = href + "?inline"
+		}
+		return l
 	}
 	return strconv.Itoa(i+1) + " of " + strconv.Itoa(len(shown)), link(i - 1), link(i + 1)
 }

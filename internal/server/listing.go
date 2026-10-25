@@ -144,25 +144,30 @@ func (s *Server) usageOf(name string) (*usage, error) {
 
 type listing struct {
 	page
-	Path     string
-	Action   string // where this folder's forms post to
-	Home     string // where the first crumb leads
-	Crumbs   []crumb
-	Parent   string
-	Items    []listItem
-	Upload   *uploadForm
-	Mkdir    bool
-	Sort     string
-	Desc     bool
-	Summary  string
-	Uploaded int
-	Created  *listItem
-	Renamed  *listItem
-	Restored *listItem
-	Deleted  int  // entries just deleted
-	Trashed  bool // they went to the trash
-	Undo     *undo
-	Moved    *moved // entries just moved or copied elsewhere
+	Path   string
+	Action string // where this folder's forms post to
+	Home   string // where the first crumb leads
+	Crumbs []crumb
+	Parent string
+	Items  []listItem
+	Upload *uploadForm
+	Mkdir  bool
+	Sort   string
+	Desc   bool
+	// Layout lays the entries out as a "list", or as a "grid" of
+	// thumbnails; LayoutAuto is set when it was picked from what the
+	// folder holds rather than asked for (see layoutOf).
+	Layout     string
+	LayoutAuto bool
+	Summary    string
+	Uploaded   int
+	Created    *listItem
+	Renamed    *listItem
+	Restored   *listItem
+	Deleted    int  // entries just deleted
+	Trashed    bool // they went to the trash
+	Undo       *undo
+	Moved      *moved // entries just moved or copied elsewhere
 	// TrashKeep says how long deleted entries stay in the trash; "" if
 	// they are deleted at once.
 	TrashKeep string
@@ -295,12 +300,70 @@ func (l listing) PickHint() string {
 	return acts[0]
 }
 
-// SortHref links a column header: a second click reverses the order.
+// SortHref links a column header: a second click reverses the order. A
+// layout asked for stays.
 func (l listing) SortHref(col string) string {
+	q := "?sort=" + col
 	if l.Sort == col && !l.Desc {
-		return "?sort=" + col + "&order=desc"
+		q += "&order=desc"
 	}
-	return "?sort=" + col
+	if !l.LayoutAuto {
+		q += "&layout=" + l.Layout
+	}
+	return q
+}
+
+// LayoutHref links the layout: list or grid, in the same order.
+func (l listing) LayoutHref(layout string) string {
+	q := "?layout=" + layout
+	if s := sortQuery(l.Sort, l.Desc); s != "" {
+		q += "&" + s
+	}
+	return q
+}
+
+// ViewQuery opens an entry in the viewer, which goes through the folder in
+// its order.
+func (l listing) ViewQuery() string {
+	if s := sortQuery(l.Sort, l.Desc); s != "" {
+		return "?view&" + s
+	}
+	return "?view"
+}
+
+// sortQuery is the query of an order other than by name, "" for that.
+func sortQuery(col string, desc bool) string {
+	q := ""
+	if col != "name" {
+		q = "sort=" + col
+	}
+	if desc {
+		q += "&order=desc"
+	}
+	return strings.TrimPrefix(q, "&")
+}
+
+// layoutOf picks how to lay out items: as ?layout= asks, or else as a grid
+// of thumbnails when pictures and videos are most of the files in it.
+func layoutOf(c fiber.Ctx, items []listItem) (layout string, auto bool) {
+	switch q := c.Query("layout"); q {
+	case "grid", "list":
+		return q, false
+	}
+	media, files := 0, 0
+	for _, it := range items {
+		if it.IsDir {
+			continue
+		}
+		files++
+		if it.Thumb || it.Preview == "image" || it.Preview == "video" {
+			media++
+		}
+	}
+	if media >= 3 && 3*media >= 2*files {
+		return "grid", true
+	}
+	return "list", true
 }
 
 // SortState is a column's aria-sort value.
@@ -376,6 +439,7 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 	}
 	data.Sort, data.Desc = sortOrder(c)
 	sortItems(data.Items, data.Sort, data.Desc)
+	data.Layout, data.LayoutAuto = layoutOf(c, data.Items)
 
 	switch {
 	case rel == "/":
