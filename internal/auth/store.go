@@ -62,7 +62,8 @@ type Upload struct {
 	Length    int64
 	Replace   bool // may replace a file of that name
 	Temp      string
-	ShareID   int64 // the upload link it came through, if any
+	ShareID   int64     // the upload link it came through, if any
+	Mtime     time.Time // the modification time the file gets; zero for when it is stored
 	CreatedAt time.Time
 	ExpiresAt time.Time
 }

@@ -764,7 +764,7 @@ func TestSyncPage(t *testing.T) {
 	for _, want := range []string{
 		`<code id="dav-url">` + home + `</code>`,
 		"The rest of the site is at http://example.com/.dav/",
-		"rclone config create goftp webdav url=" + home + " vendor=owncloud user=" + name + " pass=APP-PASSWORD --obscure",
+		"rclone config create goftp webdav url=" + home + " vendor=infinitescale user=" + name + " pass=APP-PASSWORD --obscure",
 		"<code>dav://example.com/.dav/home/" + name + "/</code>",
 		"You have no app passwords",
 		"not served over HTTPS",
@@ -1123,5 +1123,97 @@ func TestDavAppleDoubleBody(t *testing.T) {
 	fmt.Fprintf(conn, "PROPFIND /.dav/docs/a.txt HTTP/1.1\r\nHost: t\r\nAuthorization: %s\r\nDepth: 0\r\nContent-Length: 0\r\n\r\n", dav.auth)
 	if resp, err := http.ReadResponse(r, nil); err != nil || resp.StatusCode != http.StatusMultiStatus {
 		t.Errorf("the next request: %v, %v", resp, err)
+	}
+}
+
+// Sync apps may send files in pieces, as resumable uploads that a POST to
+// their folder starts: proxies that limit the size of requests let files
+// of any size through then.
+func TestDavResumable(t *testing.T) {
+	ta := newTestAuth(t)
+	f := newFixtureWith(t, ta, withHomes, func(cfg *config.Config) { cfg.Homes.Quota = 100 })
+	ta.addUser(t, "dora", "user")
+	ta.addUser(t, "erin", "user")
+	dora, erin := davAs(t, f, "dora"), davAs(t, f, "erin")
+	home := filepath.Join(f.dir, "home", "dora")
+
+	resp, _ := f.as("").do(t, "OPTIONS", "/.dav/")
+	if resp.Header.Get("Tus-Version") != tusVersion || !strings.Contains(resp.Header.Get("Allow"), "POST") {
+		t.Errorf("OPTIONS: %v", resp.Header)
+	}
+	start := func(d *davClient, dir, name string, length int, headers ...string) (*http.Response, string) {
+		t.Helper()
+		resp, _ := d.send(t, "POST", dir, nil, append([]string{"Tus-Resumable", tusVersion, "Upload-Length", strconv.Itoa(length),
+			"Upload-Metadata", metadata(name, "mtime=1700000000")}, headers...)...)
+		return resp, strings.TrimPrefix(resp.Header.Get("Location"), "http://example.com")
+	}
+	patch := func(d *davClient, loc string, offset int, data string) *http.Response {
+		t.Helper()
+		resp, _ := d.send(t, "PATCH", loc, strings.NewReader(data), "Tus-Resumable", tusVersion, "Upload-Offset", strconv.Itoa(offset),
+			"Content-Type", "application/offset+octet-stream")
+		return resp
+	}
+
+	resp, loc := start(dora, "/.dav/home/dora/", "big.bin", 10)
+	expectStatus(t, resp, http.StatusCreated)
+	if !strings.HasPrefix(resp.Header.Get("Location"), "http://example.com"+uploadsPrefix) {
+		t.Fatalf("Location %q", resp.Header.Get("Location"))
+	}
+	// Its pieces come with the app password it was started with, and only
+	// its user's.
+	if resp := patch(erin, loc, 0, "01234"); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("another user's piece: %d", resp.StatusCode)
+	}
+	if resp := patch(&davClient{f: f, auth: basicAuthHeader("dora", strings.Repeat("a", 24))}, loc, 0, "01234"); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("a wrong app password: %d", resp.StatusCode)
+	}
+	resp = patch(dora, loc, 0, "01234")
+	if resp.StatusCode != http.StatusNoContent || resp.Header.Get("Upload-Offset") != "5" {
+		t.Fatalf("a piece: %d %v", resp.StatusCode, resp.Header)
+	}
+	if resp, _ := dora.send(t, "HEAD", loc, nil, "Tus-Resumable", tusVersion); resp.Header.Get("Upload-Offset") != "5" {
+		t.Errorf("HEAD: %d %v", resp.StatusCode, resp.Header)
+	}
+	resp = patch(dora, loc, 5, "56789")
+	expectStatus(t, resp, http.StatusNoContent)
+	if readFile(t, f.dir, "home/dora/big.bin") != "0123456789" || !mtimeOf(t, filepath.Join(home, "big.bin")).Equal(time.Unix(1700000000, 0)) {
+		t.Errorf("stored: %q at %v", readFile(t, f.dir, "home/dora/big.bin"), mtimeOf(t, filepath.Join(home, "big.bin")))
+	}
+
+	// They replace what is there, as PUTs do, unless If-None-Match: *.
+	resp, loc = start(dora, "/.dav/home/dora/", "big.bin", 3)
+	expectStatus(t, resp, http.StatusCreated)
+	expectStatus(t, patch(dora, loc, 0, "abc"), http.StatusNoContent)
+	if readFile(t, f.dir, "home/dora/big.bin") != "abc" {
+		t.Error("not replaced")
+	}
+	for _, tc := range []struct {
+		d       *davClient
+		dir     string
+		name    string
+		length  int
+		headers []string
+		want    int
+	}{
+		{dora, "/.dav/home/dora/", "big.bin", 3, []string{"If-None-Match", "*"}, http.StatusConflict},
+		{dora, "/.dav/home/dora/", "huge.bin", 1000, nil, http.StatusInsufficientStorage}, // over the quota
+		{dora, "/.dav/home/dora/.x/", "a.txt", 1, nil, http.StatusForbidden},
+		{erin, "/.dav/home/dora/", "a.txt", 1, nil, http.StatusNotFound},
+	} {
+		if resp, _ := start(tc.d, tc.dir, tc.name, tc.length, tc.headers...); resp.StatusCode != tc.want &&
+			!(tc.want == http.StatusNotFound && resp.StatusCode == http.StatusForbidden) {
+			t.Errorf("POST %s%s: %d, want %d", tc.dir, tc.name, resp.StatusCode, tc.want)
+		}
+	}
+	if resp, _ := dora.send(t, "POST", "/.dav/home/dora/", nil); resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("POST without tus: %d", resp.StatusCode)
+	}
+
+	// The site's resumable uploads keep the time too.
+	admin := f.as("superadmin")
+	loc = startResumable(t, admin, "/", "m.txt", 1, "mtime=1600000000")
+	expectStatus(t, patchAt(t, admin, loc, 0, "m"), http.StatusNoContent)
+	if !mtimeOf(t, filepath.Join(f.dir, "m.txt")).Equal(time.Unix(1600000000, 0)) {
+		t.Error("the site's upload lost its time")
 	}
 }

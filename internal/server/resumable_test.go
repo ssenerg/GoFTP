@@ -47,8 +47,8 @@ func startResumable(t *testing.T, f *fixture, dir, name string, length int, meta
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("POST %s: %d %s", dir, resp.StatusCode, body)
 	}
-	loc := resp.Header.Get("Location")
-	if !strings.HasPrefix(loc, uploadsPrefix) || !auth.ValidToken(strings.TrimPrefix(loc, uploadsPrefix)) ||
+	loc, absolute := strings.CutPrefix(resp.Header.Get("Location"), "http://example.com")
+	if !absolute || !strings.HasPrefix(loc, uploadsPrefix) || !auth.ValidToken(strings.TrimPrefix(loc, uploadsPrefix)) ||
 		resp.Header.Get("Tus-Resumable") != tusVersion || resp.Header.Get("Upload-Expires") == "" {
 		t.Fatalf("creation answer: %v", resp.Header)
 	}
