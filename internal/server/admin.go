@@ -5,7 +5,6 @@ import (
 	"errors"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"go.uber.org/zap"
@@ -267,7 +266,7 @@ func (s *Server) renderAdmin(c fiber.Ctx, status int, tab, notice, failure strin
 	for _, u := range users {
 		data.Users = append(data.Users, adminUser{
 			Name: u.Username, Role: u.Role, MustChange: u.MustChangePassword, Self: u.Username == me,
-			Added: u.CreatedAt.UTC().Format("Jan 2, 2006"), AddedISO: u.CreatedAt.UTC().Format(time.RFC3339),
+			Added: u.CreatedAt.UTC().Format("Jan 2, 2006"), AddedISO: isoTime(u.CreatedAt),
 		})
 		if q := u.HomeQuota; q != nil {
 			data.Users[len(data.Users)-1].Quota = cmp.Or(quotaText(*q), "none")

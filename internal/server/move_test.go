@@ -343,10 +343,10 @@ func TestCopyChecksWhereItReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer dst.Close()
-	if err := f.srv.copyFile(dst, "c.txt", "/a/c.txt"); !errors.Is(err, fiber.ErrNotFound) {
+	if err := f.srv.copyFile(dst, "c.txt", "/a/c.txt", false); !errors.Is(err, fiber.ErrNotFound) {
 		t.Errorf("a file elsewhere: %v", err)
 	}
-	if err := f.srv.copyFile(dst, "c.txt", "/b/c.txt"); err != nil {
+	if err := f.srv.copyFile(dst, "c.txt", "/b/c.txt", false); err != nil {
 		t.Errorf("where it really is: %v", err)
 	}
 	if err := renameExclBetween(dst, "c.txt", f.srv.root, "b"); !errors.Is(err, errExists) {

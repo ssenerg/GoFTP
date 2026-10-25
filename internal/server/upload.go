@@ -95,6 +95,12 @@ func (s *Server) putFile(c fiber.Ctx, urlPath string, length int64, mtime time.T
 	if c.Get(fiber.HeaderContentRange) != "" {
 		return false, explain(fiber.ErrBadRequest, "Send the whole file: parts of files cannot be uploaded with PUT.")
 	}
+	return s.saveFile(c, urlPath, length, mtime, s.requestBody(c), c.Get(fiber.HeaderIfNoneMatch) != "*")
+}
+
+// saveFile is putFile for body, which with replace may replace a file
+// (412 otherwise).
+func (s *Server) saveFile(c fiber.Ctx, urlPath string, length int64, mtime time.Time, body *requestBody, replace bool) (created bool, err error) {
 	if hidden(urlPath) {
 		return false, fiber.ErrForbidden
 	}
@@ -102,11 +108,11 @@ func (s *Server) putFile(c fiber.Ctx, urlPath string, length int64, mtime time.T
 	if !validName(name) {
 		return false, fiber.ErrBadRequest
 	}
-	create, replace, err := s.uploadRights(c, urlPath)
+	create, mayReplace, err := s.uploadRights(c, urlPath)
 	if err != nil {
 		return false, err
 	}
-	if !create && !replace {
+	if !create && !mayReplace {
 		return false, s.deny(c)
 	}
 	if limit := int64(s.cfg.Upload.MaxSize); limit > 0 && length > limit {
@@ -120,10 +126,16 @@ func (s *Server) putFile(c fiber.Ctx, urlPath string, length int64, mtime time.T
 		return false, err
 	}
 	defer dir.Close()
-	if create, replace, err = s.uploadRightsAt(c, urlPath, path.Join(realDir, name)); err != nil {
+	if create, mayReplace, err = s.uploadRightsAt(c, urlPath, path.Join(realDir, name)); err != nil {
 		return false, err
-	} else if !create && !replace {
+	} else if !create && !mayReplace {
 		return false, s.deny(c)
+	}
+	if c.Get(fiber.HeaderIfMatch) != "" || c.Get(fiber.HeaderIfUnmodifiedSince) != "" {
+		info, _ := dir.Stat(name)
+		if !preconditionsHold(c, info) {
+			return false, fiber.ErrPreconditionFailed
+		}
 	}
 
 	if !s.roomFor(dir, length) {
@@ -132,13 +144,12 @@ func (s *Server) putFile(c fiber.Ctx, urlPath string, length int64, mtime time.T
 	if err := s.homeRoom(s.homeAt(dir), length-sizeOf(dir, name)); err != nil {
 		return false, s.uploadError(nil, err)
 	}
-	body := s.requestBody(c)
 	var from io.Reader = body
 	if body.length < 0 {
 		from = &exactReader{r: body, left: length}
 	}
-	rights := uploadRights{create: create, replace: replace}
-	created, size, err := s.receive(dir, name, from, c.Get(fiber.HeaderIfNoneMatch) != "*", rights)
+	rights := uploadRights{create: create, replace: mayReplace}
+	created, size, err := s.receive(dir, name, from, replace, rights)
 	if errors.Is(err, errExists) {
 		return false, fiber.ErrPreconditionFailed
 	}
@@ -146,7 +157,9 @@ func (s *Server) putFile(c fiber.Ctx, urlPath string, length int64, mtime time.T
 		return false, s.uploadError(body, err)
 	}
 	if !mtime.IsZero() {
-		_ = dir.Chtimes(name, time.Now(), mtime)
+		if err := dir.Chtimes(name, time.Now(), mtime); err != nil {
+			s.log.Warn("keep modification time", zap.String("path", urlPath), zap.Error(err))
+		}
 	}
 	s.logUpload(c, urlPath, size, created)
 	s.finishBody(c, body)
@@ -498,13 +511,13 @@ func (s *Server) store(dir *os.Root, name string, body io.Reader, replace bool, 
 	default:
 		err = place(dir, tmp, name, replace, rights)
 	}
-	if err != nil || !created {
-		// What it counted for the home's quota is gone, or it replaced
-		// a file.
-		s.recount(s.homeAt(dir))
-	}
 	if err != nil {
+		// What it counted for the home's quota is gone.
+		s.recount(s.homeAt(dir))
 		return "", false, size, err
+	}
+	if !created {
+		replaced(w)
 	}
 	return stored, created, size, nil
 }

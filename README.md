@@ -435,7 +435,12 @@ much room a home has left (RFC 4331). Limits:
   dropped.
 - Other properties than modification times are refused. Locks are
   advisory: they keep other WebDAV clients that ask from taking the same
-  lock, and nothing else.
+  lock, and nothing else. Each user may hold 1,000; only they may refresh
+  or end theirs.
+- A file that a PUT, MOVE or COPY replaces is gone, as on the site; a
+  folder that a MOVE or COPY replaces goes to the trash, once the move or
+  copy worked. `If-Match` and `If-Unmodified-Since` make changes depend on
+  the ETag or time a client saw.
 - WebDAV sends each file in one request, where the browser sends large
   ones in pieces: behind a proxy that limits the size of requests
   (Cloudflare: 100 MB on its Free and Pro plans), larger files cannot be

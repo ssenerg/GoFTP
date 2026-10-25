@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gofiber/fiber/v3"
 )
@@ -170,7 +169,7 @@ func (s *Server) serveViewer(c fiber.Ctx, f *os.File, info fs.FileInfo, urlPath 
 	v := viewerPage{
 		page: at.page(name), Home: at.base + "/", Crumbs: crumbs(at.base, dirRel), Name: name, Src: href + "?inline",
 		Download: href, Folder: escapePath(at.base + object(dirRel, true)), Size: formatSize(info.Size()),
-		ModTime: mod.Format("Jan 2, 2006 15:04") + " UTC", ModISO: mod.Format(time.RFC3339),
+		ModTime: shownTime(mod), ModISO: isoTime(mod),
 	}
 	if ctype != "" {
 		v.Kind = kind

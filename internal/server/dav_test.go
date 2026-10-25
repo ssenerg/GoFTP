@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -458,8 +459,12 @@ func TestDavMkcol(t *testing.T) {
 		"/.dav/none/new":   http.StatusConflict, // the folder is missing
 		"/.dav/":           http.StatusMethodNotAllowed,
 	} {
-		if resp, _ := dav.do(t, "MKCOL", uri); resp.StatusCode != want {
+		resp, _ := dav.do(t, "MKCOL", uri)
+		if resp.StatusCode != want {
 			t.Errorf("MKCOL %s: %d, want %d", uri, resp.StatusCode, want)
+		}
+		if want == http.StatusMethodNotAllowed && resp.Header.Get("Allow") != davAllow {
+			t.Errorf("MKCOL %s: Allow %q", uri, resp.Header.Get("Allow"))
 		}
 	}
 	if resp, _ := dav.send(t, "MKCOL", "/.dav/docs/x", strings.NewReader("<x/>")); resp.StatusCode != http.StatusUnsupportedMediaType {
@@ -488,7 +493,7 @@ func TestDavCopyMove(t *testing.T) {
 		t.Error("not moved")
 	}
 	// What is there is kept with "Overwrite: F", and otherwise replaced,
-	// into the trash.
+	// as a PUT replaces it.
 	resp, _ = dav.do(t, "COPY", "/.dav/docs/b.txt", "Destination", "/.dav/docs/moved.txt", "Overwrite", "F")
 	expectStatus(t, resp, http.StatusPreconditionFailed)
 	if readFile(t, f.dir, "docs/moved.txt") != "a" || len(trashedOnDisk(t, f)) != 0 {
@@ -496,7 +501,7 @@ func TestDavCopyMove(t *testing.T) {
 	}
 	resp, _ = dav.do(t, "COPY", "/.dav/docs/b.txt", "Destination", "/.dav/docs/moved.txt")
 	expectStatus(t, resp, http.StatusNoContent)
-	if readFile(t, f.dir, "docs/moved.txt") != "b" || readFile(t, f.dir, "docs/b.txt") != "b" || len(trashedOnDisk(t, f)) == 0 {
+	if readFile(t, f.dir, "docs/moved.txt") != "b" || readFile(t, f.dir, "docs/b.txt") != "b" || len(trashedOnDisk(t, f)) != 0 {
 		t.Error("not replaced")
 	}
 	trashed := len(trashedOnDisk(t, f))
@@ -619,6 +624,11 @@ func TestDavProppatch(t *testing.T) {
 	e = proppatch(davAs(t, f, userOfRole("user")), `<D:getlastmodified>Wed, 01 Jan 2020 00:00:00 GMT</D:getlastmodified>`)
 	if !strings.Contains(e[403].Raw, "getlastmodified") || !mtimeOf(t, file).Equal(time.Date(2021, 2, 3, 4, 5, 6, 0, time.UTC)) {
 		t.Errorf("by a reader: %+v", e)
+	}
+	// Operators may add files, but not change those there.
+	e = proppatch(davAs(t, f, userOfRole("operator")), `<D:getlastmodified>Wed, 01 Jan 2020 00:00:00 GMT</D:getlastmodified>`)
+	if !strings.Contains(e[403].Raw, "getlastmodified") || !mtimeOf(t, file).Equal(time.Date(2021, 2, 3, 4, 5, 6, 0, time.UTC)) {
+		t.Errorf("by an operator: %+v", e)
 	}
 	if resp, _ := dav.send(t, "PROPPATCH", "/.dav/docs/a.txt", strings.NewReader("<x")); resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("bad XML: %d", resp.StatusCode)
@@ -836,5 +846,282 @@ func TestSyncPage(t *testing.T) {
 	if _, body := g.as("user").do(t, "GET", "/.sync/", html...); !strings.Contains(body, `<code id="dav-url">http://example.com/.dav/</code>`) ||
 		strings.Contains(body, "The rest of the site") {
 		t.Errorf("without homes: %s", body)
+	}
+}
+
+// asides lists what replacing left set aside in the folder at dir, of f.
+func asides(t *testing.T, f *fixture, dir string) []string {
+	t.Helper()
+	got, err := filepath.Glob(filepath.Join(f.dir, filepath.FromSlash(dir), tempPrefix+"*"+tempSuffix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// A MOVE or COPY that fails leaves what it would have replaced as it was,
+// also with the trash off; one that works puts a folder it replaced in the
+// trash, if there is one.
+func TestDavReplaceSafely(t *testing.T) {
+	for _, keep := range []time.Duration{0, 30 * 24 * time.Hour} {
+		t.Run("keep "+keep.String(), func(t *testing.T) {
+			f, _ := newDavFixture(t, func(cfg *config.Config) { cfg.Trash.Keep = keep })
+			f.write(t, "src/locked.txt", "l")
+			f.write(t, "src/ok.txt", "o")
+			f.write(t, "dst/old.txt", "old")
+			f.write(t, "file.txt", "f")
+			for _, rule := range [][2]string{{"!/src/locked.txt", "delete"}, {"!/dst/ok.txt", "write"}} {
+				if _, err := f.auth.svc.AddPolicy("admin", rule[0], rule[1]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			admin := davAs(t, f, userOfRole("admin"))
+			// Not all of it may be deleted, so it may not move; nor may all
+			// of it be made there.
+			for _, method := range []string{"MOVE", "COPY"} {
+				resp, _ := admin.do(t, method, "/.dav/src/", "Destination", "/.dav/dst/")
+				expectStatus(t, resp, http.StatusForbidden)
+			}
+			if readFile(t, f.dir, "dst/old.txt") != "old" || exists(filepath.Join(f.dir, "dst", "ok.txt")) ||
+				!exists(filepath.Join(f.dir, "src", "ok.txt")) || len(asides(t, f, "/")) != 0 || len(trashedOnDisk(t, f)) != 0 {
+				t.Error("changed by a move or copy that failed")
+			}
+
+			resp, _ := admin.do(t, "MOVE", "/.dav/file.txt", "Destination", "/.dav/dst")
+			expectStatus(t, resp, http.StatusNoContent)
+			if readFile(t, f.dir, "dst") != "f" || exists(filepath.Join(f.dir, "file.txt")) || len(asides(t, f, "/")) != 0 {
+				t.Error("not replaced")
+			}
+			trashed := trashedOnDisk(t, f)
+			if keep == 0 && len(trashed) != 0 ||
+				keep > 0 && (len(trashed) != 1 || readFile(t, f.dir, path.Join(trashDir, trashed[0], "dst", "old.txt")) != "old") {
+				t.Errorf("the trash: %v", trashed)
+			}
+		})
+	}
+}
+
+// What a MOVE replaces leaves the home, as what a PUT replaces does; and
+// replacing counts what is written, without counting the home again.
+func TestDavReplaceInHome(t *testing.T) {
+	ta := newTestAuth(t)
+	f := newFixtureWith(t, ta, withHomes, func(cfg *config.Config) { cfg.Homes.Quota = 10 })
+	ta.addUser(t, "dora", "user")
+	dora := davAs(t, f, "dora")
+	put := func(name, content string, want int) {
+		t.Helper()
+		resp, _ := dora.send(t, "PUT", "/.dav/home/dora/"+name, strings.NewReader(content))
+		expectStatus(t, resp, want)
+	}
+	put("a.txt", "123456", http.StatusCreated)
+	put("tmp.txt", "1234", http.StatusCreated)
+	// Saved as some apps save: to a temporary file, moved over the old one.
+	resp, _ := dora.do(t, "MOVE", "/.dav/home/dora/tmp.txt", "Destination", "/.dav/home/dora/a.txt")
+	expectStatus(t, resp, http.StatusNoContent)
+	if readFile(t, f.dir, "home/dora/a.txt") != "1234" || len(trashedOnDisk(t, f)) != 0 {
+		t.Error("not replaced in place")
+	}
+	put("b.txt", "12345", http.StatusCreated)
+
+	v, ok := f.srv.uses.Load("dora")
+	if !ok {
+		t.Fatal("the home was not counted")
+	}
+	u := v.(*homeUse)
+	usage := func() (int64, time.Time) {
+		u.mu.Lock()
+		defer u.mu.Unlock()
+		return u.used, u.counted
+	}
+	_, counted := usage()
+	put("b.txt", "12", http.StatusNoContent)
+	if used, again := usage(); used != 6 || !again.Equal(counted) {
+		t.Errorf("after replacing: %d bytes, counted at %v, before at %v", used, again, counted)
+	}
+}
+
+// Where the file system finds names in any case, a MOVE spells a name anew.
+func TestDavRespell(t *testing.T) {
+	f, dav := newDavFixture(t, withTrash)
+	if f.srv.fold == nil {
+		t.Skip("this file system finds names only as spelled")
+	}
+	f.write(t, "docs/a.txt", "a")
+	f.write(t, "docs/sub/b.txt", "b")
+	names := func(dir string) []string {
+		t.Helper()
+		entries, err := os.ReadDir(filepath.Join(f.dir, dir))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, e := range entries {
+			out = append(out, e.Name())
+		}
+		return out
+	}
+
+	resp, _ := dav.do(t, "MOVE", "/.dav/docs/a.txt", "Destination", "/.dav/docs/A.txt")
+	expectStatus(t, resp, http.StatusCreated)
+	resp, _ = dav.do(t, "MOVE", "/.dav/docs/sub/", "Destination", "/.dav/docs/Sub/")
+	expectStatus(t, resp, http.StatusCreated)
+	if got := names("docs"); !slices.Equal(got, []string{"A.txt", "Sub"}) || readFile(t, f.dir, "docs/A.txt") != "a" || len(trashedOnDisk(t, f)) != 0 {
+		t.Errorf("respelled: %v", got)
+	}
+	for _, tc := range []struct {
+		method, uri, dest string
+		want              int
+	}{
+		{"COPY", "/.dav/docs/A.txt", "/.dav/docs/a.txt", http.StatusForbidden}, // onto itself
+		{"MOVE", "/.dav/docs/Sub/b.txt", "/.dav/DOCS", http.StatusConflict},    // over what holds it
+		{"MOVE", "/.dav/DOCS/", "/.dav/docs/sub/x/", http.StatusConflict},      // into itself
+	} {
+		if resp, body := dav.do(t, tc.method, tc.uri, "Destination", tc.dest); resp.StatusCode != tc.want {
+			t.Errorf("%s %s to %s: %d, want %d: %s", tc.method, tc.uri, tc.dest, resp.StatusCode, tc.want, body)
+		}
+	}
+	if !exists(filepath.Join(f.dir, "docs", "Sub", "b.txt")) || len(trashedOnDisk(t, f)) != 0 {
+		t.Error("refused, but changed")
+	}
+	// The site's rename too.
+	resp, _ = post(t, f, "/docs/", "rename=A.txt&to=a.txt")
+	expectStatus(t, resp, http.StatusCreated)
+	if got := names("docs"); !slices.Equal(got, []string{"Sub", "a.txt"}) {
+		t.Errorf("renamed: %v", got)
+	}
+}
+
+// Changes can be made to depend on what a client saw (RFC 9110, section
+// 13.1).
+func TestDavPreconditions(t *testing.T) {
+	f, dav := newDavFixture(t)
+	f.write(t, "docs/a.txt", "a")
+	resp, _ := dav.do(t, "HEAD", "/.dav/docs/a.txt")
+	etag, stale := resp.Header.Get("ETag"), `"1-1"`
+	if etag == "" {
+		t.Fatal("no ETag")
+	}
+	for _, tc := range []struct {
+		name, header, value string
+	}{
+		{"a.txt", "If-Match", stale},
+		{"a.txt", "If-Match", "W/" + etag},
+		{"a.txt", "If-Unmodified-Since", "Mon, 02 Jan 2006 15:04:05 GMT"},
+		{"new.txt", "If-Match", "*"},
+	} {
+		if resp, _ := dav.send(t, "PUT", "/.dav/docs/"+tc.name, strings.NewReader("b"), tc.header, tc.value); resp.StatusCode != http.StatusPreconditionFailed {
+			t.Errorf("PUT %s with %s: %s: %d", tc.name, tc.header, tc.value, resp.StatusCode)
+		}
+	}
+	if readFile(t, f.dir, "docs/a.txt") != "a" || exists(filepath.Join(f.dir, "docs", "new.txt")) {
+		t.Error("written anyway")
+	}
+	resp, _ = dav.send(t, "PUT", "/.dav/docs/a.txt", strings.NewReader("b"), "If-Match", stale+", "+etag)
+	expectStatus(t, resp, http.StatusNoContent)
+	etag = resp.Header.Get("ETag")
+
+	for _, tc := range [][]string{
+		{"DELETE"},
+		{"MOVE", "Destination", "/.dav/docs/b.txt"},
+		{"COPY", "Destination", "/.dav/docs/b.txt"},
+		{"PROPPATCH"},
+	} {
+		var body io.Reader
+		if tc[0] == "PROPPATCH" {
+			body = strings.NewReader(`<D:propertyupdate xmlns:D="DAV:"><D:set><D:prop><D:getlastmodified>Wed, 01 Jan 2020 00:00:00 GMT</D:getlastmodified></D:prop></D:set></D:propertyupdate>`)
+		}
+		if resp, _ := dav.send(t, tc[0], "/.dav/docs/a.txt", body, append(tc[1:], "If-Match", stale)...); resp.StatusCode != http.StatusPreconditionFailed {
+			t.Errorf("%s: %d", tc[0], resp.StatusCode)
+		}
+	}
+	if readFile(t, f.dir, "docs/a.txt") != "b" || exists(filepath.Join(f.dir, "docs", "b.txt")) {
+		t.Error("changed anyway")
+	}
+	resp, _ = dav.do(t, "DELETE", "/.dav/docs/a.txt", "If-Match", etag)
+	expectStatus(t, resp, http.StatusNoContent)
+	// The site's PUT too.
+	if resp, _ := f.send(t, "PUT", "/docs/c.txt", strings.NewReader("c"), "If-Match", "*"); resp.StatusCode != http.StatusPreconditionFailed {
+		t.Errorf("the site's PUT: %d", resp.StatusCode)
+	}
+}
+
+func lockRequest(t *testing.T, d *davClient, uri, owner string, headers ...string) (*http.Response, string) {
+	t.Helper()
+	return d.send(t, "LOCK", uri, strings.NewReader(`<?xml version="1.0"?><D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope>`+
+		`<D:locktype><D:write/></D:locktype><D:owner>`+owner+`</D:owner></D:lockinfo>`), append([]string{"Depth", "0"}, headers...)...)
+}
+
+// Locks are their users': others may not end or refresh them, and each
+// user takes only so many.
+func TestDavLockOwners(t *testing.T) {
+	f, dav := newDavFixture(t)
+	f.write(t, "docs/a.txt", "a")
+	admin := davAs(t, f, userOfRole("admin"))
+
+	resp, _ := lockRequest(t, dav, "/.dav/docs/a.txt", "me")
+	expectStatus(t, resp, http.StatusOK)
+	token := strings.Trim(resp.Header.Get("Lock-Token"), "<>")
+	if resp, _ := admin.do(t, "LOCK", "/.dav/docs/a.txt", "If", "(<"+token+">)"); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("refreshed by another user: %d", resp.StatusCode)
+	}
+	if resp, _ := admin.do(t, "UNLOCK", "/.dav/docs/a.txt", "Lock-Token", "<"+token+">"); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("ended by another user: %d", resp.StatusCode)
+	}
+	resp, _ = dav.do(t, "UNLOCK", "/.dav/docs/a.txt", "Lock-Token", "<"+token+">")
+	expectStatus(t, resp, http.StatusNoContent)
+
+	if resp, _ := lockRequest(t, dav, "/.dav/docs/a.txt", strings.Repeat("x", maxLockOwner+1)); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("a long owner: %d", resp.StatusCode)
+	}
+	defer func(n int) { maxUserLocks = n }(maxUserLocks)
+	maxUserLocks = 2
+	// A lock of a free name makes an empty file, but for macOS's files
+	// beside files.
+	for _, name := range []string{"new.txt", "._new.txt"} {
+		resp, _ := lockRequest(t, dav, "/.dav/docs/"+name, "me")
+		expectStatus(t, resp, http.StatusCreated)
+	}
+	if info, err := os.Stat(filepath.Join(f.dir, "docs", "new.txt")); err != nil || info.Size() != 0 || exists(filepath.Join(f.dir, "docs", "._new.txt")) {
+		t.Errorf("made %v, %v", info, err)
+	}
+	if resp, _ := lockRequest(t, dav, "/.dav/docs/a.txt", "me"); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("one too many: %d", resp.StatusCode)
+	}
+	resp, _ = lockRequest(t, admin, "/.dav/docs/a.txt", "another")
+	expectStatus(t, resp, http.StatusOK)
+	other := strings.Trim(resp.Header.Get("Lock-Token"), "<>")
+
+	got := dav.propfind(t, "/.dav/docs/", "1", `<D:propfind xmlns:D="DAV:"><D:prop><D:lockdiscovery/></D:prop></D:propfind>`)
+	if locks := got["/.dav/docs/a.txt"][200].Locks; !slices.Equal(locks, []string{other}) || len(got["/.dav/docs/new.txt"][200].Locks) != 1 {
+		t.Errorf("lockdiscovery: %v", got)
+	}
+}
+
+// macOS's files beside files are read to the end, so that the connection
+// goes on.
+func TestDavAppleDoubleBody(t *testing.T) {
+	f, dav := newDavFixture(t)
+	f.write(t, "docs/a.txt", "a")
+	addr, _ := startServer(t, f)
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	r := bufio.NewReader(conn)
+	data := strings.Repeat("x", 200<<10)
+	fmt.Fprintf(conn, "PUT /.dav/docs/._a.txt HTTP/1.1\r\nHost: t\r\nAuthorization: %s\r\nContent-Length: %d\r\n\r\n%s", dav.auth, len(data), data)
+	resp, err := http.ReadResponse(r, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated || resp.Close {
+		t.Fatalf("PUT: %d, closed %v", resp.StatusCode, resp.Close)
+	}
+	fmt.Fprintf(conn, "PROPFIND /.dav/docs/a.txt HTTP/1.1\r\nHost: t\r\nAuthorization: %s\r\nDepth: 0\r\nContent-Length: 0\r\n\r\n", dav.auth)
+	if resp, err := http.ReadResponse(r, nil); err != nil || resp.StatusCode != http.StatusMultiStatus {
+		t.Errorf("the next request: %v, %v", resp, err)
 	}
 }

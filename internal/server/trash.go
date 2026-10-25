@@ -105,7 +105,7 @@ func (s *Server) toTrash(c fiber.Ctx, dir *os.Root, name, realPath string, info 
 }
 
 // moveToTrash moves the entry name of dir to the trash with note, and
-// returns its ID there.
+// returns its ID there. It waits there under the name it had at note.Path.
 func (s *Server) moveToTrash(dir *os.Root, name string, note trashNote) (string, error) {
 	trash, err := s.openTrash(true)
 	if err != nil {
@@ -122,7 +122,7 @@ func (s *Server) moveToTrash(dir *os.Root, name string, note trashNote) (string,
 		err = writeNote(box, note)
 	}
 	if err == nil {
-		err = renameBetween(dir, name, box, name)
+		err = renameBetween(dir, name, box, path.Base(note.Path))
 	}
 	if err != nil {
 		_ = trash.RemoveAll(id)
@@ -681,8 +681,8 @@ func (s *Server) renderTrash(c fiber.Ctx, status int, notice, failure string) er
 		gone := it.At.Add(s.cfg.Trash.Keep)
 		ti := trashItem{ID: it.ID, Name: path.Base(it.Path), Folder: folder, FolderHref: escapePath(object(folder, true)),
 			Kind: kindOf(it.Path), Size: formatSize(it.size), By: it.By,
-			Deleted: it.At.Format("Jan 2, 2006 15:04") + " UTC", DeletedISO: it.At.Format(time.RFC3339),
-			Gone: gone.UTC().Format("Jan 2, 2006 15:04") + " UTC", GoneISO: gone.UTC().Format(time.RFC3339),
+			Deleted: shownTime(it.At), DeletedISO: isoTime(it.At),
+			Gone: shownTime(gone), GoneISO: isoTime(gone),
 			CanRestore: restore, CanPurge: purge, Home: it.Home}
 		if it.Dir {
 			ti.Kind, ti.Size = "folder", "—"

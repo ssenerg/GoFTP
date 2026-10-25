@@ -132,7 +132,7 @@ func (s *Server) shared(c fiber.Ctx) error {
 			href := escapePath(view.base + "/" + name)
 			return s.render(c, fiber.StatusOK, "share", sharePage{page: s.sharePage(c, view, name), File: &shareFile{
 				Name: name, Kind: kindOf(name), Size: formatSize(info.Size()),
-				ModTime: info.ModTime().UTC().Format("Jan 2, 2006 15:04") + " UTC", ModISO: info.ModTime().UTC().Format(time.RFC3339),
+				ModTime: shownTime(info.ModTime()), ModISO: isoTime(info.ModTime()),
 				Href: href, Preview: preview, Src: href + "?inline",
 			}})
 		}
@@ -195,7 +195,7 @@ func (s *Server) share(c fiber.Ctx) (*auth.Share, *shareView, string, bool, erro
 		return nil, nil, "", false, err
 	}
 	view := &shareView{token: token, base: sharePrefix + token, Root: sharePrefix + token + "/", Folder: sh.IsDir, By: sh.Creator,
-		Expires: sh.ExpiresAt.UTC().Format("Jan 2, 2006 15:04") + " UTC", ExpiresISO: sh.ExpiresAt.UTC().Format(time.RFC3339)}
+		Expires: shownTime(sh.ExpiresAt), ExpiresISO: isoTime(sh.ExpiresAt)}
 	// Error pages offer the way back to the link's root.
 	c.Locals(shareKey, view)
 	if sh.UsedUp() {
@@ -548,8 +548,8 @@ func (s *Server) renderShares(c fiber.Ctx, status int, notice, failure string, c
 	for _, sh := range shares {
 		l := sharedLink{ID: sh.ID, Name: shareName(sh.Path), Path: sh.Path, Href: escapePath(object(sh.Path, sh.IsDir)),
 			Kind: kindOf(sh.Path), By: sh.Creator, Password: sh.PasswordHash != "", Upload: sh.Upload, Uses: useCount(&sh),
-			UsedUp: sh.UsedUp(), Expires: sh.ExpiresAt.UTC().Format("Jan 2, 2006 15:04") + " UTC",
-			ExpiresISO: sh.ExpiresAt.UTC().Format(time.RFC3339)}
+			UsedUp: sh.UsedUp(), Expires: shownTime(sh.ExpiresAt),
+			ExpiresISO: isoTime(sh.ExpiresAt)}
 		if sh.IsDir {
 			l.Kind = "folder"
 		}
@@ -566,8 +566,8 @@ func (s *Server) renderShares(c fiber.Ctx, status int, notice, failure string, c
 			}
 		}
 		if !sh.LastUsedAt.IsZero() {
-			l.LastUsed = sh.LastUsedAt.UTC().Format("Jan 2, 2006 15:04") + " UTC"
-			l.LastUsedISO = sh.LastUsedAt.UTC().Format(time.RFC3339)
+			l.LastUsed = shownTime(sh.LastUsedAt)
+			l.LastUsedISO = isoTime(sh.LastUsedAt)
 		}
 		data.Links = append(data.Links, l)
 	}
@@ -708,7 +708,7 @@ func (s *Server) createShare(c fiber.Ctx, u *auth.User, form map[string]string) 
 			"upload": sh.Upload, "max_uses": sh.MaxUses, "max_bytes": sh.MaxBytes, "max_size": maxSize})
 	}
 	created := &createdLink{URL: link, Name: shareName(urlPath), Password: sh.PasswordHash != "", Upload: sh.Upload, MaxSize: maxSize,
-		Expires: expires.Format("Jan 2, 2006 15:04") + " UTC", ExpiresISO: expires.Format(time.RFC3339)}
+		Expires: shownTime(expires), ExpiresISO: isoTime(expires)}
 	if sh.MaxUses > 0 {
 		created.MaxUses = plural(sh.MaxUses, useNoun(sh))
 	}

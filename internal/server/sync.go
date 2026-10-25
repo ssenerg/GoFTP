@@ -4,7 +4,6 @@ import (
 	"errors"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"go.uber.org/zap"
@@ -69,11 +68,11 @@ func (s *Server) renderSync(c fiber.Ctx, status int, notice, failure string, cre
 	data.URL = c.BaseURL() + data.Path
 	data.FileManagerURL = "dav" + strings.TrimPrefix(data.URL, "http")
 	for _, ap := range apps {
-		row := appRow{ID: ap.ID, Name: ap.Name, Created: ap.CreatedAt.UTC().Format("Jan 2, 2006 15:04") + " UTC",
-			CreatedISO: ap.CreatedAt.UTC().Format(time.RFC3339)}
+		row := appRow{ID: ap.ID, Name: ap.Name, Created: shownTime(ap.CreatedAt),
+			CreatedISO: isoTime(ap.CreatedAt)}
 		if !ap.LastUsedAt.IsZero() {
-			row.LastUsed = ap.LastUsedAt.UTC().Format("Jan 2, 2006 15:04") + " UTC"
-			row.LastUsedISO = ap.LastUsedAt.UTC().Format(time.RFC3339)
+			row.LastUsed = shownTime(ap.LastUsedAt)
+			row.LastUsedISO = isoTime(ap.LastUsedAt)
 		}
 		data.Apps = append(data.Apps, row)
 	}
