@@ -393,8 +393,12 @@ func TestSharesPage(t *testing.T) {
 	if !strings.Contains(body, `<span class="where">/docs</span>`) || !strings.Contains(body, "/docs/a.txt") || !strings.Contains(body, "<th>By</th>") {
 		t.Error("superadmins do not see every link")
 	}
-	if _, body := f.as("operator").do(t, "GET", sharesPath, "Accept", "text/html"); !strings.Contains(body, "No links are active.") {
-		t.Error("operator sees links")
+	if _, body := f.as("admin").do(t, "GET", sharesPath, "Accept", "text/html"); strings.Contains(body, "No links are active.") {
+		t.Error("admin has no links")
+	}
+	// Who may not share links, and has none, has no links to see.
+	if _, body := f.as("operator").do(t, "GET", sharesPath, "Accept", "text/html"); strings.Contains(body, "/docs") || strings.Contains(body, `id="links-title"`) {
+		t.Errorf("operator sees links: %s", body)
 	}
 	if resp, _ := f.as("").do(t, "GET", sharesPath); resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("anonymous: %d", resp.StatusCode)

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"os"
@@ -331,7 +332,11 @@ func TestCopyChecksWhereItReads(t *testing.T) {
 	if err := os.Symlink("b", filepath.Join(f.dir, "a")); err != nil {
 		t.Fatal(err)
 	}
-	allow := f.srv.rulesOf(nil)
+	rules, err := f.srv.auth.RulesFor(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow := func(obj, act string) (bool, error) { return rules.Allow(obj, act), nil }
 	if _, err := f.srv.readable("/a", "/a", allow); !errors.Is(err, errChanged) {
 		t.Errorf("a folder elsewhere: %v", err)
 	}

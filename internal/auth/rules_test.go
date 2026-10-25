@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -90,7 +91,7 @@ func TestDenyRules(t *testing.T) {
 		}
 
 		// Rules are checked as the request found them.
-		rules, err := svc.RulesFor(&auth.User{Username: "alice"})
+		rules, err := svc.RulesFor(context.Background(), &auth.User{Username: "alice"})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -389,8 +389,13 @@
     place-items: center;
     width: 32px;
     height: 32px;
+    padding: 0;
+    border: 0;
     border-radius: 8px;
+    background: none;
     color: var(--muted);
+    font: inherit;
+    cursor: pointer;
     -webkit-tap-highlight-color: transparent;
   }
   .icon-btn:hover, .icon-btn[aria-expanded="true"] { background: var(--hover); color: var(--text); }
@@ -414,10 +419,24 @@
   .share-result .form-title { color: var(--success); }
   .share-url { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
   .share-note { color: var(--muted); font-size: 13px; }
-  .share-here { position: relative; }
-  .share-here > summary { list-style: none; -webkit-tap-highlight-color: transparent; }
-  .share-here > summary::-webkit-details-marker { display: none; }
-  .share-here[open] > summary { background: var(--hover); }
+  .share-here, .people-here { position: relative; }
+  .share-here > summary, .people-here > summary { list-style: none; -webkit-tap-highlight-color: transparent; }
+  .share-here > summary::-webkit-details-marker, .people-here > summary::-webkit-details-marker { display: none; }
+  .share-here[open] > summary, .people-here[open] > summary { background: var(--hover); }
+  .people-here .count { min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12px; line-height: 20px; text-align: center; }
+  .people p { font-size: 13.5px; }
+  .people-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0 0 12px; list-style: none; border-bottom: 1px solid var(--border); }
+  .people-list li { display: flex; align-items: center; gap: 10px; }
+  .people-list .avatar { flex: none; width: 28px; height: 28px; font-size: 12.5px; }
+  .people-list .person { display: flex; flex-direction: column; flex: 1; min-width: 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+  .people-list .person .faint { font-size: 12.5px; font-weight: 400; }
+  .people-list form { margin: 0; }
+  .people-form { display: flex; flex-direction: column; gap: 12px; }
+  .people-row { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 10px; }
+  .people-row select { height: 38px; width: 100%; }
+  .shares-section { margin-top: 28px; }
+  .shares-section:first-of-type { margin-top: 0; }
+  .shares-section > h2 { margin-bottom: 10px; font-size: 16px; }
   .shared-by { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
   .shared-by strong { color: var(--text); font-weight: 600; }
   .share-card { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 36px 28px; margin-top: 6vh; text-align: center; }
@@ -674,7 +693,7 @@
        toolbar: aligned to a button on the left, they would leave the
        screen. */
     .tools { position: relative; }
-    .share-here, .newfolder { position: static; }
+    .share-here, .people-here, .newfolder { position: static; }
     .tools .popover { top: auto; left: 0; right: 0; width: auto; margin-top: 8px; }
     .container { padding: 18px 14px 32px; }
     .head h1 { font-size: 22px; }
@@ -701,7 +720,7 @@
     <nav class="sections" aria-label="Sections">
       <a href="/"{{if eq .Section "files"}} aria-current="true"{{end}}><svg class="i" aria-hidden="true"><use href="#i-folder"/></svg>Files</a>
       {{with .MyFiles}}<a href="{{.}}"{{if eq $.Section "home"}} aria-current="true"{{end}}><svg class="i" aria-hidden="true"><use href="#i-home"/></svg>My files</a>{{end}}
-      {{if .Shares}}<a href="/.shares/"{{if eq .Section "shared"}} aria-current="page"{{end}}><svg class="i" aria-hidden="true"><use href="#i-link"/></svg>Shared</a>{{end}}
+      {{if or .Shares .MyFiles}}<a href="/.shares/"{{if eq .Section "shared"}} aria-current="page"{{else if eq .Section "shared-folder"}} aria-current="true"{{end}}><svg class="i" aria-hidden="true"><use href="#i-link"/></svg>Shared</a>{{end}}
       {{if .Trash}}<a href="/.trash/"{{if eq .Section "trash"}} aria-current="page"{{end}}><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Trash</a>{{end}}
     </nav>
     {{end}}

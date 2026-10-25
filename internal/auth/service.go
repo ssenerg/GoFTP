@@ -209,7 +209,7 @@ func (s *Service) ChangePassword(ctx context.Context, u *User, current, next str
 // Allowed reports whether u (nil for anonymous) may perform act on obj.
 // For many checks, RulesFor gathers the rules once.
 func (s *Service) Allowed(u *User, obj, act string) (bool, error) {
-	r, err := s.RulesFor(u)
+	r, err := s.RulesFor(context.Background(), u)
 	if err != nil {
 		return false, err
 	}

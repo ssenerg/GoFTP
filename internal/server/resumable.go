@@ -122,7 +122,7 @@ func (s *Server) createUpload(c fiber.Ctx, dirPath string, sh *auth.Share, overw
 	}
 	allow, deny := s.visitorRules(c), func() error { return s.deny(c) }
 	if sh != nil {
-		allow, deny = s.linkUploadRules(sh), linkClosed
+		allow, deny = s.linkUploadRules(c, sh), linkClosed
 	}
 	urlPath := path.Join(dirPath, name)
 	if create, mayReplace, err := uploadRightsOf(allow, urlPath); err != nil {
@@ -402,7 +402,7 @@ func (s *Server) uploadAllow(c fiber.Ctx, up *auth.Upload) (allowFunc, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.linkUploadRules(sh), nil
+	return s.linkUploadRules(c, sh), nil
 }
 
 // linkClosed refuses an upload through a link whose creator may no longer

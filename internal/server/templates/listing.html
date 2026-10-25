@@ -24,6 +24,12 @@
   {{with .Moved}}
   <div class="alert success banner" id="moved" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg><span>{{.Verb}}{{if ne .N 1}} {{.N}} items{{end}} to <a href="{{.Href}}">{{.Name}}</a>.</span></div>
   {{end}}
+  {{with .Granted}}
+  <div class="alert success banner" id="granted" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg><span>Shared with <strong>{{.User}}</strong>: they can {{if .Write}}change{{else}}see{{end}} what is in it.</span></div>
+  {{end}}
+  {{if .Ungranted}}
+  <div class="alert success banner" id="ungranted" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg><span>The folder is no longer shared with them.</span></div>
+  {{end}}
   {{if .Deleted}}
   <div class="alert success banner" id="deleted" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg>
     {{- if .Undo}}<span>Moved <strong>{{.Undo.Name}}</strong> to the trash.</span>
@@ -36,7 +42,7 @@
   <div class="head">
     <div>
       <h1>{{.Title}}{{if and .User (not .Upload)}} <span class="chip">View only</span>{{end}}</h1>
-      <p class="summary">{{.Summary}}{{with .Share}} · Link expires <time datetime="{{.ExpiresISO}}">{{.Expires}}</time>{{end}}</p>
+      <p class="summary">{{.Summary}}{{with .Share}} · Link expires <time datetime="{{.ExpiresISO}}">{{.Expires}}</time>{{end}}{{with .SharedBy}} · Shared with you by <strong>{{.Owner}}</strong>{{end}}</p>
       {{with .Usage}}
       <div class="usage{{if .Full}} full{{end}}">
         {{if .Quota}}<span class="usage-bar" role="meter" aria-label="Space used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{.Percent}}"><span style="width: {{.Percent}}%"></span></span>{{end}}
@@ -63,6 +69,33 @@
       {{end}}
       {{if .Items}}
       <a class="btn" href="?zip" download><svg class="i" aria-hidden="true"><use href="#i-archive"/></svg>Download zip</a>
+      {{end}}
+      {{with .People}}
+      <details class="people-here">
+        <summary class="btn"><svg class="i" aria-hidden="true"><use href="#i-users"/></svg>People{{with .Shares}}<span class="count">{{len .}}</span>{{end}}</summary>
+        <div class="popover people">
+          {{if .Shares}}
+          <ul class="people-list" aria-label="Shared with">
+            {{range .Shares}}
+            <li><span class="avatar" aria-hidden="true">{{initial .User}}</span><span class="person">{{.User}}<span class="faint">{{if .Write}}Can edit{{else}}Can view{{end}}</span></span>
+              <form method="post" action="/.shares/"><input type="hidden" name="action" value="ungrant"><input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="back" value="1">
+                <button type="submit" class="icon-btn" aria-label="Stop sharing with {{.User}}" title="Stop sharing"><svg class="i" aria-hidden="true"><use href="#i-x"/></svg></button></form></li>
+            {{end}}
+          </ul>
+          {{else}}
+          <p class="faint">Only you can open this folder. Share it with people who have an account here.</p>
+          {{end}}
+          <form method="post" action="/.shares/" class="people-form" data-folder="{{$.Action}}">
+            <input type="hidden" name="action" value="grant"><input type="hidden" name="path" value="{{.Path}}">
+            <div class="people-row">
+              <label class="field"><span>Share with</span><input name="user" required maxlength="32" placeholder="Username" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+              <label class="field"><span>They can</span><select name="access"><option value="read">View</option><option value="edit">Edit</option></select></label>
+            </div>
+            <p class="popover-error" role="alert" hidden></p>
+            <div class="popover-actions"><button type="submit" class="btn primary small">Share</button></div>
+          </form>
+        </div>
+      </details>
       {{end}}
       {{if .ShareHere}}
       <details class="share-here">

@@ -158,6 +158,79 @@ func (s *PgStore) AppPasswordUser(ctx context.Context, username string, tokenHas
 	return &u, nil
 }
 
+func (s *PgStore) ShareFolder(ctx context.Context, fs *FolderShare) error {
+	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		// The row lock serializes an owner's shares, so they cannot exceed
+		// the limit together.
+		if _, err := tx.Exec(ctx, "SELECT 1 FROM users WHERE id = $1 FOR UPDATE", fs.OwnerID); err != nil {
+			return err
+		}
+		var n int
+		err := tx.QueryRow(ctx, "SELECT count(*) FROM folder_shares WHERE owner_id = $1 AND NOT (path = $2 AND user_id = $3)",
+			fs.OwnerID, fs.Path, fs.UserID).Scan(&n)
+		if err != nil {
+			return err
+		}
+		if n >= MaxFolderShares {
+			return ErrTooMany
+		}
+		return tx.QueryRow(ctx, `INSERT INTO folder_shares (owner_id, path, user_id, can_write) VALUES ($1, $2, $3, $4)
+			ON CONFLICT (path, user_id) DO UPDATE SET can_write = EXCLUDED.can_write RETURNING id, created_at`,
+			fs.OwnerID, fs.Path, fs.UserID, fs.Write).Scan(&fs.ID, &fs.CreatedAt)
+	})
+}
+
+const folderShareQuery = `SELECT f.id, f.owner_id, o.username, f.path, f.user_id, u.username, f.can_write, f.created_at
+	FROM folder_shares f JOIN users o ON o.id = f.owner_id JOIN users u ON u.id = f.user_id `
+
+func collectFolderShares(rows pgx.Rows, err error) ([]FolderShare, error) {
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (FolderShare, error) {
+		var fs FolderShare
+		err := row.Scan(&fs.ID, &fs.OwnerID, &fs.Owner, &fs.Path, &fs.UserID, &fs.User, &fs.Write, &fs.CreatedAt)
+		return fs, err
+	})
+}
+
+func (s *PgStore) FolderShares(ctx context.Context, ownerID int64) ([]FolderShare, error) {
+	return collectFolderShares(s.db.Query(ctx, folderShareQuery+"WHERE $1 = 0 OR f.owner_id = $1 ORDER BY f.created_at DESC, f.id DESC", ownerID))
+}
+
+func (s *PgStore) SharedWith(ctx context.Context, userID int64) ([]FolderShare, error) {
+	return collectFolderShares(s.db.Query(ctx, folderShareQuery+"WHERE f.user_id = $1 ORDER BY f.path", userID))
+}
+
+func (s *PgStore) DeleteFolderShare(ctx context.Context, id, userID int64) (*FolderShare, error) {
+	fs := FolderShare{ID: id}
+	err := s.db.QueryRow(ctx, `DELETE FROM folder_shares WHERE id = $1 AND ($2 = 0 OR owner_id = $2 OR user_id = $2)
+		RETURNING owner_id, path, user_id, can_write, created_at`, id, userID).
+		Scan(&fs.OwnerID, &fs.Path, &fs.UserID, &fs.Write, &fs.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &fs, nil
+}
+
+func (s *PgStore) MoveFolderShare(ctx context.Context, id int64, p string) error {
+	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `DELETE FROM folder_shares WHERE path = $2 AND id <> $1
+			AND user_id = (SELECT user_id FROM folder_shares WHERE id = $1)`, id, p)
+		if err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, "UPDATE folder_shares SET path = $2 WHERE id = $1", id, p)
+		if err == nil && tag.RowsAffected() == 0 {
+			err = ErrNotFound
+		}
+		return err
+	})
+}
+
 func (s *PgStore) SetHomeQuota(ctx context.Context, userID int64, quota *int64) error {
 	tag, err := s.db.Exec(ctx, "UPDATE users SET home_quota = $2 WHERE id = $1", userID, quota)
 	if err == nil && tag.RowsAffected() == 0 {

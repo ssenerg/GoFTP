@@ -98,6 +98,24 @@ type Store interface {
 	// once a minute.
 	AppPasswordUser(ctx context.Context, username string, tokenHash []byte) (*User, error)
 
+	// ShareFolder stores fs, or changes how the folder of fs is shared with
+	// its user if it is already, and sets ID and CreatedAt; ErrTooMany if
+	// the owner has MaxFolderShares.
+	ShareFolder(ctx context.Context, fs *FolderShare) error
+	// FolderShares lists the folder shares of ownerID, of everyone for 0,
+	// newest first.
+	FolderShares(ctx context.Context, ownerID int64) ([]FolderShare, error)
+	// SharedWith lists the folders shared with userID.
+	SharedWith(ctx context.Context, userID int64) ([]FolderShare, error)
+	// DeleteFolderShare deletes the folder share id, if userID (unless 0)
+	// is its owner or its user, and returns it, without the usernames
+	// (ErrNotFound if there is no such share).
+	DeleteFolderShare(ctx context.Context, id, userID int64) (*FolderShare, error)
+	// MoveFolderShare gives the folder share id the path p, where its
+	// folder moved, and deletes a share of p with the same user, which a
+	// folder that is gone left (ErrNotFound if there is no share id).
+	MoveFolderShare(ctx context.Context, id int64, p string) error
+
 	// CreateSession starts a session for u, unless u was deleted or changed
 	// password since it was read (ErrNotFound). It may drop the user's
 	// oldest sessions to bound their number.

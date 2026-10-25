@@ -66,7 +66,7 @@ type page struct {
 	Shares    bool   // may share links, or administers them
 	Trash     bool   // may delete, so the trash is of use
 	MyFiles   string // the visitor's home, if they have one
-	Section   string // the top bar's tab for the page: "files", "shared" or ""
+	Section   string // the top bar's tab for the page: "files", "home", "shared", "shared-folder", "trash" or ""
 	Here      string
 	MinLength int
 	// Shared is set on pages reached through a share link, which show
@@ -175,6 +175,15 @@ type listing struct {
 	Usage     *usage    // what the visitor's home holds, in it
 	// ShareHere is set when the visitor may share this folder.
 	ShareHere bool
+	// People is set in the visitor's home, where they may share the folder
+	// with people.
+	People *peopleHere
+	// Granted is who the folder was just shared with; Ungranted is set
+	// when someone was just let go.
+	Granted   *folderShareView
+	Ungranted bool
+	// SharedBy is set in a folder shared with the visitor, or in one in it.
+	SharedBy *auth.FolderShare
 }
 
 // undo restores the one entry a deletion moved to the trash.
@@ -322,14 +331,25 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 	}
 	data := listing{page: s.page(c, "All files"), Path: urlPath, Action: escapePath(object(urlPath, true)),
 		Home: "/", Crumbs: crumbs("", urlPath), Items: items, Summary: summaryOf(items)}
-	// In their home, the path starts there.
+	// In their home, the path starts there; in a folder shared with them,
+	// at that folder.
 	home := s.homeOf(userOf(c))
 	rel := inHome(home, urlPath)
+	shareRoot := false
 	if rel != "" {
 		data.Home, data.Crumbs = escapePath(home+"/"), crumbs(home, rel)
 		if data.Usage, err = s.usageOf(userOf(c).Username); err != nil {
 			return err
 		}
+		if data.People, err = s.peopleAt(c, urlPath, realPath); err != nil {
+			return err
+		}
+	} else if sh := s.shareAt(c, urlPath); sh != nil {
+		data.SharedBy, data.Section = sh, "shared-folder"
+		parts := strings.Split(urlPath, "/")
+		n := strings.Count(sh.Path, "/")
+		base := strings.Join(parts[:n], "/")
+		data.Crumbs, shareRoot = crumbs(base, strings.TrimPrefix(urlPath, base)), len(parts) == n+1
 	}
 	create, replace, err := s.uploadRightsAt(c, object(urlPath, true), object(realPath, true))
 	if err != nil {
@@ -360,6 +380,10 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 	switch {
 	case rel == "/":
 		data.Title = "My files"
+	case shareRoot && path.Clean(data.SharedBy.Path) == s.auth.HomeOf(data.SharedBy.Owner):
+		data.Title = "Home of " + data.SharedBy.Owner
+	case shareRoot:
+		data.Title = path.Base(urlPath)
 	case urlPath != "/":
 		data.Title = path.Base(urlPath)
 		data.Parent = escapePath(object(path.Dir(urlPath), true))
@@ -393,6 +417,15 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 		return err
 	}
 	data.Moved = s.movedBanner(c)
+	if data.People != nil {
+		// Only who it is shared with is confirmed.
+		for i, fs := range data.People.Shares {
+			if fs.User == c.Query("granted") {
+				data.Granted = &data.People.Shares[i]
+			}
+		}
+		data.Ungranted = c.Query("ungranted") == "1"
+	}
 	if create || replace {
 		data.Upload = &uploadForm{Action: data.Action, Replace: replace}
 	}

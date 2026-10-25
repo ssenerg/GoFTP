@@ -170,6 +170,37 @@ deleted for good. A hidden `.goftp-owner` file in each home notes whose it
 is, so a home that a deleted user left behind goes to the trash before a
 new user of the same name gets in.
 
+### Sharing folders with people
+
+Users can let other users into a folder of their home, or the whole home:
+**People** in the folder adds someone by username, who can then view what
+is in it, or edit it too (upload, create folders, rename, overwrite and
+delete in it, but not delete or rename the shared folder itself). Sharing
+it with them again changes how; nested folders shared both ways give the
+more of the two. It is listed under **Shared** on both sides, where its
+owner can stop sharing it and its user can leave it, and a superadmin can
+end any share without seeing where it is. Users find what is shared with
+them under **Shared**, and over WebDAV on the way to it through `/home/`,
+with nothing else of the owner's home.
+
+A share follows its folder when it is renamed or moved within the home,
+and ends when the folder is deleted (a restored folder is no longer
+shared), moved out of the home or replaced by another, or when either
+user is deleted. It lets its user do only what the owner may do and share
+there, and rules for the same paths come first, as for homes. What they
+add counts against the owner's quota; what they delete goes to the trash,
+where both see it. Scripts:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" -d action=grant -d path=/home/bob/photos -d user=alice -d access=edit https://host/.shares/
+# {"id":1,"path":"/home/bob/photos","user":"alice","access":"edit"}
+curl -H "Authorization: Bearer $TOKEN" -d action=ungrant -d id=1 https://host/.shares/
+```
+
+`access` is `read` (the default) or `edit`. Sharing needs the `share`
+action on the folder, and `write` for edit, which everyone has in their
+home unless a rule takes it away.
+
 ## Running without Docker
 
 ```sh
@@ -496,8 +527,13 @@ Wrong app passwords count against the client's sign-in budget
   a minute. The cookie that remembers a password lasts at most
   `auth.session_ttl`.
 - Homes are private by built-in rules, which also hold against admins and
-  superadmins until a rule opens them up. A superadmin can still change
-  the rules, and whoever runs the server can read its files.
+  superadmins until a rule opens them up, or their user shares a folder
+  with someone. A superadmin can still change the rules, and whoever runs
+  the server can read its files.
+- Sharing a folder with people tells whether a username exists, to any
+  user with a home. A folder deleted by other means than goftp (on the
+  server's disk, say) keeps its shares, for a folder made in its place,
+  until its owner stops them.
 - Upload links let whoever has them fill a folder, with files of up to
   `upload.max_size` each, until the disk is down to `upload.min_free`:
   give them a short life, a password, a limit of files or of size. Into a

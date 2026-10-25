@@ -4,8 +4,8 @@
 <main class="container">
   <div class="head">
     <div>
-      <h1>Shared links</h1>
-      <p class="summary">{{if .All}}Everyone's links that still work. As a superadmin, you can revoke any of them.{{else}}Your links that still work.{{end}}</p>
+      <h1>Shared</h1>
+      <p class="summary">{{if .All}}Everyone's links that still work, and the folders people share. As a superadmin, you can end any of them.{{else}}What you share, and what is shared with you.{{end}}</p>
     </div>
   </div>
 
@@ -22,45 +22,128 @@
   {{with .Notice}}<div class="alert success banner" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg><span>{{.}}</span></div>{{end}}
   {{with .Error}}<div class="alert error banner" role="alert"><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>{{.}}</span></div>{{end}}
 
-  <div class="card">
-    {{if .Links}}
-    <table class="files list-table">
-      <thead><tr><th>Link to</th>{{if .All}}<th>By</th>{{end}}<th>Used</th><th>Expires</th><th class="act"><span class="vh">Revoke</span></th></tr></thead>
-      <tbody>
-        {{range .Links}}
-        <tr>
-          <td class="name"><span class="link-cell">
-            {{if .Href}}<a href="{{.Href}}">{{else}}<span class="private" title="Where it leads is not yours to see">{{end}}<svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><span>{{.Name}}</span>
-              {{- if .Upload}}<span class="chip" title="Visitors may upload files here, without seeing what is here"><svg class="i" aria-hidden="true"><use href="#i-upload"/></svg>upload</span>{{end}}
-              {{- if .Password}}<span class="chip" title="Visitors need a password"><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg>password</span>{{end}}
-              {{- if .UsedUp}}<span class="chip warn" title="It was used as often as it may be, so it no longer works">used up</span>{{end}}{{if .Href}}</a>{{else}}</span>{{end}}
-            {{with .Path}}<span class="where">{{.}}</span>{{end}}
-          </span></td>
-          {{if $.All}}<td><span class="cell-label">By </span>{{.By}}</td>{{end}}
-          <td><span class="cell-label">Used </span>{{.Uses}}<span class="faint">{{if .LastUsed}}, last <time datetime="{{.LastUsedISO}}">{{.LastUsed}}</time>{{else}}, never opened{{end}}</span></td>
-          <td><span class="cell-label">Expires </span><time datetime="{{.ExpiresISO}}">{{.Expires}}</time></td>
-          <td class="act">
-            <details class="confirm">
-              <summary class="icon-btn" aria-label="Revoke the link to {{.Name}}" title="Revoke"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg></summary>
-              <form method="post" action="/.shares/" class="popover">
-                <input type="hidden" name="action" value="revoke"><input type="hidden" name="id" value="{{.ID}}">
-                <p>Revoke this link to <strong>{{.Name}}</strong>? It stops working at once.</p>
-                <div class="popover-actions"><button type="submit" class="btn danger small">Revoke</button></div>
-              </form>
-            </details>
-          </td>
-        </tr>
-        {{end}}
-      </tbody>
-    </table>
-    {{else}}
-    <div class="empty">
-      <svg class="i" aria-hidden="true"><use href="#i-link"/></svg>
-      <p>No links are active.</p>
-      <p>To share a file or folder, open its ⋯ menu, or Share in the folder, and create a link.</p>
+  {{with .WithYou}}
+  <section class="shares-section" aria-labelledby="with-you-title">
+    <h2 id="with-you-title">Shared with you</h2>
+    <div class="card">
+      <table class="files list-table">
+        <thead><tr><th>Folder</th><th>Owner</th><th>Access</th><th class="date">Since</th><th class="act"><span class="vh">Leave</span></th></tr></thead>
+        <tbody>
+          {{range .}}
+          <tr>
+            <td class="name"><span class="link-cell">
+              <a href="{{.Href}}"><svg class="i kind k-folder" aria-hidden="true"><use href="#i-folder"/></svg><span>{{.Name}}</span></a>
+              <span class="where">{{.Path}}</span>
+            </span></td>
+            <td><span class="who-cell"><span class="avatar" aria-hidden="true">{{initial .Owner}}</span><span>{{.Owner}}</span></span></td>
+            <td><span class="cell-label">Access </span>{{if .Write}}Can edit{{else}}Can view{{end}}</td>
+            <td class="date"><time datetime="{{.SinceISO}}">{{.Since}}</time></td>
+            <td class="act">
+              <details class="confirm">
+                <summary class="icon-btn" aria-label="Leave {{.Name}}" title="Leave"><svg class="i" aria-hidden="true"><use href="#i-logout"/></svg></summary>
+                <form method="post" action="/.shares/" class="popover">
+                  <input type="hidden" name="action" value="ungrant"><input type="hidden" name="id" value="{{.ID}}">
+                  <p>Leave <strong>{{.Name}}</strong>? You can no longer open it, unless {{.Owner}} shares it with you again.</p>
+                  <div class="popover-actions"><button type="submit" class="btn danger small">Leave</button></div>
+                </form>
+              </details>
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
     </div>
-    {{end}}
-  </div>
+  </section>
+  {{end}}
+
+  {{if or .Shares .Links}}
+  <section class="shares-section" aria-labelledby="links-title">
+    <h2 id="links-title">Shared links</h2>
+    <div class="card">
+      {{if .Links}}
+      <table class="files list-table">
+        <thead><tr><th>Link to</th>{{if .All}}<th>By</th>{{end}}<th>Used</th><th>Expires</th><th class="act"><span class="vh">Revoke</span></th></tr></thead>
+        <tbody>
+          {{range .Links}}
+          <tr>
+            <td class="name"><span class="link-cell">
+              {{if .Href}}<a href="{{.Href}}">{{else}}<span class="private" title="Where it leads is not yours to see">{{end}}<svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><span>{{.Name}}</span>
+                {{- if .Upload}}<span class="chip" title="Visitors may upload files here, without seeing what is here"><svg class="i" aria-hidden="true"><use href="#i-upload"/></svg>upload</span>{{end}}
+                {{- if .Password}}<span class="chip" title="Visitors need a password"><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg>password</span>{{end}}
+                {{- if .UsedUp}}<span class="chip warn" title="It was used as often as it may be, so it no longer works">used up</span>{{end}}{{if .Href}}</a>{{else}}</span>{{end}}
+              {{with .Path}}<span class="where">{{.}}</span>{{end}}
+            </span></td>
+            {{if $.All}}<td><span class="cell-label">By </span>{{.By}}</td>{{end}}
+            <td><span class="cell-label">Used </span>{{.Uses}}<span class="faint">{{if .LastUsed}}, last <time datetime="{{.LastUsedISO}}">{{.LastUsed}}</time>{{else}}, never opened{{end}}</span></td>
+            <td><span class="cell-label">Expires </span><time datetime="{{.ExpiresISO}}">{{.Expires}}</time></td>
+            <td class="act">
+              <details class="confirm">
+                <summary class="icon-btn" aria-label="Revoke the link to {{.Name}}" title="Revoke"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg></summary>
+                <form method="post" action="/.shares/" class="popover">
+                  <input type="hidden" name="action" value="revoke"><input type="hidden" name="id" value="{{.ID}}">
+                  <p>Revoke this link to <strong>{{.Name}}</strong>? It stops working at once.</p>
+                  <div class="popover-actions"><button type="submit" class="btn danger small">Revoke</button></div>
+                </form>
+              </details>
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{else}}
+      <div class="empty">
+        <svg class="i" aria-hidden="true"><use href="#i-link"/></svg>
+        <p>No links are active.</p>
+        <p>To share a file or folder, open its ⋯ menu, or Share in the folder, and create a link.</p>
+      </div>
+      {{end}}
+    </div>
+  </section>
+  {{end}}
+
+  {{if or .MyFiles .Folders}}
+  <section class="shares-section" aria-labelledby="folders-title">
+    <h2 id="folders-title">{{if .All}}Folders shared with people{{else}}Folders you share with people{{end}}</h2>
+    <div class="card">
+      {{if .Folders}}
+      <table class="files list-table">
+        <thead><tr><th>Folder</th>{{if .All}}<th>Owner</th>{{end}}<th>Shared with</th><th>Access</th><th class="date">Since</th><th class="act"><span class="vh">Stop sharing</span></th></tr></thead>
+        <tbody>
+          {{range .Folders}}
+          <tr>
+            <td class="name"><span class="link-cell">
+              {{if .Href}}<a href="{{.Href}}"><svg class="i kind k-folder" aria-hidden="true"><use href="#i-folder"/></svg>{{else}}<span class="private" title="Where it is is not yours to see"><svg class="i kind k-lock" aria-hidden="true"><use href="#i-lock"/></svg>{{end}}<span>{{.Name}}</span>{{if .Href}}</a>{{else}}</span>{{end}}
+              {{with .Path}}<span class="where">{{.}}</span>{{end}}
+            </span></td>
+            {{if $.All}}<td><span class="cell-label">Owner </span>{{.Owner}}</td>{{end}}
+            <td><span class="who-cell"><span class="avatar" aria-hidden="true">{{initial .User}}</span><span>{{.User}}</span></span></td>
+            <td><span class="cell-label">Access </span>{{if .Write}}Can edit{{else}}Can view{{end}}</td>
+            <td class="date"><time datetime="{{.SinceISO}}">{{.Since}}</time></td>
+            <td class="act">
+              <details class="confirm">
+                <summary class="icon-btn" aria-label="Stop sharing {{.Name}} with {{.User}}" title="Stop sharing"><svg class="i" aria-hidden="true"><use href="#i-x"/></svg></summary>
+                <form method="post" action="/.shares/" class="popover">
+                  <input type="hidden" name="action" value="ungrant"><input type="hidden" name="id" value="{{.ID}}">
+                  <p>Stop sharing <strong>{{.Name}}</strong> with <strong>{{.User}}</strong>? They can no longer open it.</p>
+                  <div class="popover-actions"><button type="submit" class="btn danger small">Stop sharing</button></div>
+                </form>
+              </details>
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{else}}
+      <div class="empty">
+        <svg class="i" aria-hidden="true"><use href="#i-users"/></svg>
+        <p>You share no folders with people.</p>
+        <p>To let people who have an account here into a folder, open it under My files and choose People.</p>
+      </div>
+      {{end}}
+    </div>
+  </section>
+  {{end}}
+
 </main>
 {{template "footer" .}}
 {{template "icons"}}
