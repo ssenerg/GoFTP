@@ -358,6 +358,7 @@ func (s *Server) serveSharedDir(c fiber.Ctx, dir *os.File, view *shareView, urlP
 	}
 	data.Sort, data.Desc = sortOrder(c)
 	sortItems(data.Items, data.Sort, data.Desc)
+	data.Layout, data.LayoutAuto = layoutOf(c, data.Items)
 	return s.render(c, fiber.StatusOK, "listing", data)
 }
 

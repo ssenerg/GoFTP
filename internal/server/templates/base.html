@@ -460,6 +460,39 @@
   form.inline { display: inline-block; margin: 0 4px 0 0; vertical-align: middle; }
   .thumb-box { position: relative; display: inline-grid; place-items: center; flex: none; width: 22px; height: 22px; }
   .thumb { position: absolute; top: 50%; left: 50%; width: 30px; height: 30px; transform: translate(-50%, -50%); object-fit: cover; border-radius: 6px; background: var(--surface); }
+  .layout-toggle { display: inline-flex; }
+  .layout-toggle .btn { width: 40px; padding: 0; border-radius: 0; }
+  .layout-toggle .btn:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+  .layout-toggle .btn:last-child { margin-left: -1px; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+  .layout-toggle .btn[aria-current] { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); position: relative; }
+  /* The grid: the same rows, as tiles of thumbnails. */
+  .files.grid, .files.grid thead, .files.grid tbody { display: block; }
+  .files.grid thead tr { display: flex; align-items: center; gap: 4px 18px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+  .files.grid th { height: auto; padding: 0; border: 0; text-align: left; }
+  .files.grid th.pick { width: auto; }
+  .files.grid th.act { display: none; }
+  .files.grid tbody { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; padding: 12px; }
+  .files.grid tbody tr { position: relative; display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+  .files.grid tbody tr[hidden] { display: none; }
+  .files.grid tbody tr:hover { border-color: var(--border-strong); }
+  .files.grid tbody tr:hover td, .files.grid tbody tr td { background: none; }
+  .files.grid tbody tr.new, .files.grid tbody tr.selected, .files.grid tbody tr.ticked { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .files.grid td { display: block; width: auto; height: auto; padding: 0; border: 0; text-align: left; }
+  .files.grid td.date { display: none; }
+  .files.grid td.name a { flex-direction: column; align-items: stretch; gap: 0; }
+  .files.grid td.name a > svg.kind, .files.grid .thumb-box { box-sizing: border-box; width: 100%; height: auto; aspect-ratio: 1; border-radius: calc(var(--radius-sm) - 1px) calc(var(--radius-sm) - 1px) 0 0; background: var(--surface-2); }
+  .files.grid td.name a > svg.kind { padding: 30%; }
+  .files.grid .thumb-box > svg.kind { width: 40%; height: 40%; }
+  .files.grid .thumb { top: 0; left: 0; width: 100%; height: 100%; transform: none; border-radius: inherit; }
+  .files.grid td.name a > span:last-child { padding: 8px 10px 0; overflow: hidden; font-size: 13px; white-space: nowrap; text-overflow: ellipsis; }
+  .files.grid td.num { padding: 2px 10px 8px; color: var(--faint); font-size: 12px; min-height: 14px; }
+  .files.grid tr.up td.name a > span:last-child { padding-bottom: 8px; }
+  .files.grid td.pick { position: absolute; top: 8px; left: 8px; z-index: 1; width: auto; padding: 0; opacity: 0; }
+  .files.grid tr:hover td.pick, .files.grid tr.ticked td.pick, .files.grid td.pick:focus-within, .files.grid.picking td.pick { opacity: 1; }
+  .files.grid td.pick input { width: 18px; height: 18px; }
+  .files.grid td.act { position: absolute; top: 4px; right: 4px; width: auto; padding: 0; }
+  .files.grid td.act .icon-btn { background: color-mix(in srgb, var(--surface) 85%, transparent); }
+  .files.grid tr.up { justify-content: center; }
   .stage { display: grid; place-items: center; min-height: 240px; padding: 12px; background: var(--surface-2); overflow: hidden; }
   .stage img, .stage video { display: block; max-width: 100%; max-height: calc(100vh - 250px); border-radius: var(--radius-sm); }
   .stage audio { width: min(560px, 100%); }
@@ -676,6 +709,10 @@
   }
   @media (max-width: 720px) {
     .files .date, .files .where-col { display: none; }
+    .files.grid tbody { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; padding: 8px; }
+    .files.grid td.name a > span:last-child { padding: 6px 8px 0; font-size: 12px; }
+    .files.grid td.num { padding: 1px 8px 6px; font-size: 11px; }
+    .files.grid td.pick { opacity: 1; }
     /* Each user or rule becomes a block: who on top, the rest below. */
     .list-table thead { display: none; }
     .list-table tbody tr { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
@@ -785,6 +822,8 @@
   <symbol id="i-audio" viewBox="0 0 24 24"><path d="M9 18V5.5l11-2V16"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/></symbol>
   <symbol id="i-archive" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9M10 13h4"/></symbol>
   <symbol id="i-code" viewBox="0 0 24 24"><path d="m15.5 17 5-5-5-5m-7 0-5 5 5 5"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4.5 6h.01M4.5 12h.01M4.5 18h.01" stroke-width="2.6"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>
   <symbol id="i-left" viewBox="0 0 24 24"><path d="m14.5 6-6 6 6 6"/></symbol>
   <symbol id="i-right" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11m0-11-11 11"/></symbol>

@@ -337,9 +337,18 @@ compression: most large files do not compress anyway.
 
 Clicking an image, a video, an audio file or a PDF opens it in a viewer,
 with Download next to it and the previous and next ones of its folder a
-click or an arrow key away (Escape goes back to the folder). Listings show
-thumbnails of JPEG, PNG, GIF, WebP and BMP images, and a link to a single
-file shows it on the link's page. The same works with a query: `?view` (the
+click, an arrow key or (for pictures, on touch screens) a swipe away, in
+the order the folder was sorted in; Escape goes back to the folder, and
+the next picture is fetched ahead. Listings show thumbnails of JPEG, PNG,
+GIF, WebP and BMP images, and a link to a single file shows it on the
+link's page.
+
+Folders can be laid out as a list or as a grid of thumbnails, with the
+buttons next to Download zip; the grid keeps everything else of the list
+(ticking entries, their ⋯ menu, sorting, filtering). Folders whose files
+are mostly pictures and videos (two thirds of them, at least three) open
+as a grid. A layout chosen with the buttons is remembered for the folder,
+in the browser; `?layout=grid` or `?layout=list` asks for one in a link. The same works with a query: `?view` (the
 viewer), `?inline` (the file, to be shown in a browser) and `?thumb` (a
 thumbnail of at most 256×256 pixels).
 

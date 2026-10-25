@@ -63,7 +63,7 @@
   }
 
   // The viewer: arrows go to the previous and next file, Escape back to the
-  // folder.
+  // folder; on touch screens, so do swipes across a picture.
   const stage = $("#stage");
   if (stage) {
     document.addEventListener("keydown", e => {
@@ -72,6 +72,51 @@
       if (to) location.assign(to.href);
       else if (e.key === "Escape") location.assign(stage.dataset.folder);
     });
+    if (stage.dataset.kind === "image") {
+      let start = null;
+      stage.addEventListener("pointerdown", e => {
+        if (e.pointerType !== "mouse") start = { x: e.clientX, y: e.clientY };
+      });
+      stage.addEventListener("pointerup", e => {
+        if (!start) return;
+        const dx = e.clientX - start.x;
+        const dy = e.clientY - start.y;
+        start = null;
+        if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx) / 2) return;
+        const to = dx < 0 ? $("#next") : $("#prev");
+        if (to) location.assign(to.href);
+      });
+      stage.addEventListener("pointercancel", () => { start = null; });
+    }
+  }
+
+  // The list or grid of a folder: a choice made here is remembered for the
+  // folder, on this device.
+  const entries = $("#entries");
+  if (entries) {
+    const key = "goftp-layout:" + location.pathname;
+    const apply = layout => {
+      entries.classList.toggle("grid", layout === "grid");
+      entries.dataset.layout = layout;
+      for (const b of $$(".layout-toggle [data-layout]")) {
+        if (b.dataset.layout === layout) b.setAttribute("aria-current", "true");
+        else b.removeAttribute("aria-current");
+      }
+    };
+    let saved = null;
+    try {
+      saved = localStorage.getItem(key);
+    } catch {}
+    if ("auto" in entries.dataset && (saved === "grid" || saved === "list")) apply(saved);
+    for (const b of $$(".layout-toggle [data-layout]")) {
+      b.addEventListener("click", e => {
+        e.preventDefault();
+        apply(b.dataset.layout);
+        try {
+          localStorage.setItem(key, b.dataset.layout);
+        } catch {}
+      });
+    }
   }
 
   // Filtering the listing; "/" jumps to the filter, Escape clears it.
@@ -544,6 +589,8 @@
     const update = () => {
       const n = boxes.filter(b => b.checked).length;
       for (const b of boxes) b.closest("tr").classList.toggle("ticked", b.checked);
+      // In the grid, every box shows once one is ticked.
+      if (entries) entries.classList.toggle("picking", n > 0);
       picked.hidden = n === 0;
       count.textContent = `${n} picked`;
       clear.hidden = n === 0;
