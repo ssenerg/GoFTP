@@ -167,47 +167,70 @@ func (s *PgStore) ShareFolder(ctx context.Context, fs *FolderShare) error {
 			return err
 		}
 		var n int
-		err := tx.QueryRow(ctx, "SELECT count(*) FROM folder_shares WHERE owner_id = $1 AND NOT (path = $2 AND user_id = $3)",
-			fs.OwnerID, fs.Path, fs.UserID).Scan(&n)
+		err := tx.QueryRow(ctx, `SELECT count(*) FROM folder_shares WHERE owner_id = $1 AND NOT (path = $2 AND user_id = $3)
+			AND `+unexpired, fs.OwnerID, fs.Path, fs.UserID).Scan(&n)
 		if err != nil {
 			return err
 		}
 		if n >= MaxFolderShares {
 			return ErrTooMany
 		}
-		return tx.QueryRow(ctx, `INSERT INTO folder_shares (owner_id, path, user_id, can_write) VALUES ($1, $2, $3, $4)
-			ON CONFLICT (path, user_id) DO UPDATE SET can_write = EXCLUDED.can_write RETURNING id, created_at`,
-			fs.OwnerID, fs.Path, fs.UserID, fs.Write).Scan(&fs.ID, &fs.CreatedAt)
+		return tx.QueryRow(ctx, `INSERT INTO folder_shares (owner_id, path, user_id, can_write, expires_at) VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (path, user_id) DO UPDATE SET can_write = EXCLUDED.can_write, expires_at = EXCLUDED.expires_at
+			RETURNING id, created_at`,
+			fs.OwnerID, fs.Path, fs.UserID, fs.Write, nullTime(fs.ExpiresAt)).Scan(&fs.ID, &fs.CreatedAt)
 	})
 }
 
-const folderShareQuery = `SELECT f.id, f.owner_id, o.username, f.path, f.user_id, u.username, f.can_write, f.created_at
-	FROM folder_shares f JOIN users o ON o.id = f.owner_id JOIN users u ON u.id = f.user_id `
+// unexpired picks the folder shares that have not expired.
+const unexpired = "(expires_at IS NULL OR expires_at > now())"
+
+const folderShareQuery = `SELECT f.id, f.owner_id, o.username, f.path, f.user_id, u.username, f.can_write, f.created_at, f.expires_at
+	FROM folder_shares f JOIN users o ON o.id = f.owner_id JOIN users u ON u.id = f.user_id
+	WHERE (f.expires_at IS NULL OR f.expires_at > now()) `
+
+// nullTime is t for the database, NULL if zero.
+func nullTime(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
+}
 
 func collectFolderShares(rows pgx.Rows, err error) ([]FolderShare, error) {
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (FolderShare, error) {
-		var fs FolderShare
-		err := row.Scan(&fs.ID, &fs.OwnerID, &fs.Owner, &fs.Path, &fs.UserID, &fs.User, &fs.Write, &fs.CreatedAt)
+		var (
+			fs      FolderShare
+			expires *time.Time
+		)
+		err := row.Scan(&fs.ID, &fs.OwnerID, &fs.Owner, &fs.Path, &fs.UserID, &fs.User, &fs.Write, &fs.CreatedAt, &expires)
+		if expires != nil {
+			fs.ExpiresAt = *expires
+		}
 		return fs, err
 	})
 }
 
 func (s *PgStore) FolderShares(ctx context.Context, ownerID int64) ([]FolderShare, error) {
-	return collectFolderShares(s.db.Query(ctx, folderShareQuery+"WHERE $1 = 0 OR f.owner_id = $1 ORDER BY f.created_at DESC, f.id DESC", ownerID))
+	return collectFolderShares(s.db.Query(ctx, folderShareQuery+"AND ($1 = 0 OR f.owner_id = $1) ORDER BY f.created_at DESC, f.id DESC", ownerID))
 }
 
 func (s *PgStore) SharedWith(ctx context.Context, userID int64) ([]FolderShare, error) {
-	return collectFolderShares(s.db.Query(ctx, folderShareQuery+"WHERE f.user_id = $1 ORDER BY f.path", userID))
+	return collectFolderShares(s.db.Query(ctx, folderShareQuery+"AND f.user_id = $1 ORDER BY f.path", userID))
 }
 
 func (s *PgStore) DeleteFolderShare(ctx context.Context, id, userID int64) (*FolderShare, error) {
 	fs := FolderShare{ID: id}
+	var expires *time.Time
 	err := s.db.QueryRow(ctx, `DELETE FROM folder_shares WHERE id = $1 AND ($2 = 0 OR owner_id = $2 OR user_id = $2)
-		RETURNING owner_id, path, user_id, can_write, created_at`, id, userID).
-		Scan(&fs.OwnerID, &fs.Path, &fs.UserID, &fs.Write, &fs.CreatedAt)
+		AND `+unexpired+` RETURNING owner_id, path, user_id, can_write, created_at, expires_at`, id, userID).
+		Scan(&fs.OwnerID, &fs.Path, &fs.UserID, &fs.Write, &fs.CreatedAt, &expires)
+	if expires != nil {
+		fs.ExpiresAt = *expires
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -479,7 +502,10 @@ func (s *PgStore) DeleteShare(ctx context.Context, id, userID int64) error {
 }
 
 func (s *PgStore) DeleteExpiredShares(ctx context.Context) error {
-	_, err := s.db.Exec(ctx, "DELETE FROM shares WHERE expires_at <= now()")
+	if _, err := s.db.Exec(ctx, "DELETE FROM shares WHERE expires_at <= now()"); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, "DELETE FROM folder_shares WHERE expires_at <= now()")
 	return err
 }
 

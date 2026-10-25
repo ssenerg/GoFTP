@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"go.uber.org/zap"
@@ -27,6 +28,17 @@ type folderShareView struct {
 	Owner, User     string
 	Write           bool
 	Since, SinceISO string
+	Until, UntilISO string // when it ends; "" for never
+}
+
+// folderShareTTLs are how long a folder may be shared, as the People
+// popover offers it; "" is until it is stopped.
+var folderShareTTLs = []shareTTL{
+	{"", "No end date", 0, true},
+	{"1d", "1 day", 24 * time.Hour, false},
+	{"7d", "1 week", 7 * 24 * time.Hour, false},
+	{"30d", "1 month", 30 * 24 * time.Hour, false},
+	{"90d", "3 months", 90 * 24 * time.Hour, false},
 }
 
 // viewFolderShare describes fs to the visitor of c, who may see where it
@@ -34,6 +46,9 @@ type folderShareView struct {
 func (s *Server) viewFolderShare(c fiber.Ctx, fs auth.FolderShare, private bool) folderShareView {
 	v := folderShareView{ID: fs.ID, Name: shareName(fs.Path), Path: fs.Path, Href: escapePath(object(fs.Path, true)),
 		Owner: fs.Owner, User: fs.User, Write: fs.Write, Since: shownTime(fs.CreatedAt), SinceISO: isoTime(fs.CreatedAt)}
+	if !fs.ExpiresAt.IsZero() {
+		v.Until, v.UntilISO = shownTime(fs.ExpiresAt), isoTime(fs.ExpiresAt)
+	}
 	switch {
 	case private:
 		v.Name, v.Path, v.Href = "Private folder", "", ""
@@ -155,9 +170,10 @@ func accessOf(write bool) string {
 
 // grantFolder shares the folder at form["path"], the visitor's home or a
 // folder in it, with the user form["user"]: with form["access"] read to let
-// them see what is in it, or edit to change it too. Sharing it with them
-// again changes how. It needs the rights to share the folder, and to
-// change it for edit.
+// them see what is in it, or edit to change it too, and with
+// form["expires"] (1d, 7d, 30d or 90d) for that long. Sharing it with them
+// again changes how and for how long. It needs the rights to share the
+// folder, and to change it for edit.
 func (s *Server) grantFolder(c fiber.Ctx, u *auth.User, form map[string]string) error {
 	write := false
 	switch form["access"] {
@@ -166,6 +182,15 @@ func (s *Server) grantFolder(c fiber.Ctx, u *auth.User, form map[string]string) 
 		write = true
 	default:
 		return explain(fiber.ErrBadRequest, "People may read a folder (access=read) or edit it (access=edit).")
+	}
+	ttl, known := time.Duration(0), false
+	for _, t := range folderShareTTLs {
+		if t.Value == form["expires"] {
+			ttl, known = t.TTL, true
+		}
+	}
+	if !known {
+		return explain(fiber.ErrBadRequest, "Share a folder for 1d, 7d, 30d or 90d, or without expires until you stop it.")
 	}
 	urlPath, ok := formPath(form["path"])
 	if !ok {
@@ -205,7 +230,7 @@ func (s *Server) grantFolder(c fiber.Ctx, u *auth.User, form map[string]string) 
 
 	ctx, cancel := dbContext(c)
 	defer cancel()
-	fs, err := s.auth.ShareFolder(ctx, u, realPath, username, write)
+	fs, err := s.auth.ShareFolder(ctx, u, realPath, username, write, ttl)
 	switch {
 	case errors.Is(err, auth.ErrInvalid):
 		// It leads out of the home.
@@ -218,9 +243,13 @@ func (s *Server) grantFolder(c fiber.Ctx, u *auth.User, form map[string]string) 
 		return err
 	}
 	s.log.Info("folder shared", zap.String("ip", c.IP()), zap.String("user", u.Username), zap.String("path", fs.Path),
-		zap.String("with", fs.User), zap.Bool("write", fs.Write), zap.Int64("folder_share", fs.ID))
+		zap.String("with", fs.User), zap.Bool("write", fs.Write), zap.Int64("folder_share", fs.ID), zap.Duration("for", ttl))
 	if !strings.Contains(c.Get(fiber.HeaderAccept), fiber.MIMETextHTML) {
-		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"id": fs.ID, "path": fs.Path, "user": fs.User, "access": accessOf(fs.Write)})
+		out := fiber.Map{"id": fs.ID, "path": fs.Path, "user": fs.User, "access": accessOf(fs.Write), "expires_at": nil}
+		if !fs.ExpiresAt.IsZero() {
+			out["expires_at"] = fs.ExpiresAt.UTC().Format(time.RFC3339)
+		}
+		return c.Status(fiber.StatusCreated).JSON(out)
 	}
 	return s.redirect(c, escapePath(object(urlPath, true))+"?granted="+url.QueryEscape(fs.User))
 }
@@ -263,6 +292,7 @@ func (s *Server) ungrantFolder(c fiber.Ctx, u *auth.User, form map[string]string
 type peopleHere struct {
 	Path   string // URL path of the folder
 	Shares []folderShareView
+	TTLs   []shareTTL // how long it may be shared
 }
 
 // peopleAt returns who the folder at urlPath, really at realPath, in the
@@ -278,7 +308,7 @@ func (s *Server) peopleAt(c fiber.Ctx, urlPath, realPath string) (*peopleHere, e
 	if err != nil {
 		return nil, err
 	}
-	p := &peopleHere{Path: urlPath}
+	p := &peopleHere{Path: urlPath, TTLs: folderShareTTLs}
 	for _, fs := range shares {
 		if s.folded(fs.Path) == s.folded(realPath) {
 			p.Shares = append(p.Shares, s.viewFolderShare(c, fs, false))

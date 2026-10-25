@@ -13,8 +13,9 @@ import (
 // what is in it, or with Write to change it too, but for deleting or
 // renaming the folder itself. It lets them do only what its owner may do
 // there and share, and the rules of administrators for the same paths come
-// first. It ends when the folder is deleted or leaves the home, and follows
-// it when it moves within the home (see MoveFolderShares).
+// first. It ends at ExpiresAt, if set, or when the folder is deleted or
+// leaves the home, and follows it when it moves within the home (see
+// MoveFolderShares).
 type FolderShare struct {
 	ID        int64
 	OwnerID   int64
@@ -24,6 +25,7 @@ type FolderShare struct {
 	User      string // their username
 	Write     bool
 	CreatedAt time.Time
+	ExpiresAt time.Time // zero for never
 }
 
 // MaxFolderShares bounds the folder shares of one owner.
@@ -31,9 +33,10 @@ const MaxFolderShares = 200
 
 // ShareFolder shares the folder at path, which really is owner's home or in
 // it, with the user username (ErrNotFound if there is none), to read or with
-// write to change; sharing it with them again changes how. It does not
-// check that the folder exists.
-func (s *Service) ShareFolder(ctx context.Context, owner *User, path, username string, write bool) (*FolderShare, error) {
+// write to change, for ttl or with 0 until it is stopped; sharing it with
+// them again changes how and for how long. It does not check that the
+// folder exists.
+func (s *Service) ShareFolder(ctx context.Context, owner *User, path, username string, write bool, ttl time.Duration) (*FolderShare, error) {
 	home := s.HomeOf(owner.Username)
 	if home == "" || !s.within(path, home) {
 		return nil, fmt.Errorf("%w: only folders in your home can be shared with people", ErrInvalid)
@@ -58,14 +61,17 @@ func (s *Service) ShareFolder(ctx context.Context, owner *User, path, username s
 		}
 	}
 	fs := &FolderShare{OwnerID: owner.ID, Owner: owner.Username, Path: path, UserID: user.ID, User: user.Username, Write: write}
+	if ttl > 0 {
+		fs.ExpiresAt = time.Now().Add(ttl)
+	}
 	if err := s.store.ShareFolder(ctx, fs); err != nil {
 		return nil, err
 	}
 	return fs, nil
 }
 
-// FolderShares lists the folders owner shares with people, newest first;
-// those of everyone with all.
+// FolderShares lists the folders owner shares with people that have not
+// expired, newest first; those of everyone with all.
 func (s *Service) FolderShares(ctx context.Context, owner *User, all bool) ([]FolderShare, error) {
 	if all {
 		return s.store.FolderShares(ctx, 0)

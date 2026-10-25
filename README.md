@@ -193,29 +193,31 @@ new user of the same name gets in.
 Users can let other users into a folder of their home, or the whole home:
 **People** in the folder adds someone by username, who can then view what
 is in it, or edit it too (upload, create folders, rename, overwrite and
-delete in it, but not delete or rename the shared folder itself). Sharing
-it with them again changes how; nested folders shared both ways give the
-more of the two. It is listed under **Shared** on both sides, where its
+delete in it, but not delete or rename the shared folder itself), until
+the owner stops it or for a day, a week, a month or 3 months. Sharing it
+with them again changes how and for how long; nested folders shared both
+ways give the more of the two. It is listed under **Shared** on both sides, where its
 owner can stop sharing it and its user can leave it, and a superadmin can
 end any share without seeing where it is. Users find what is shared with
 them under **Shared**, and over WebDAV on the way to it through `/home/`,
 with nothing else of the owner's home.
 
 A share follows its folder when it is renamed or moved within the home,
-and ends when the folder is deleted (a restored folder is no longer
-shared), moved out of the home or replaced by another, or when either
+and ends at its end date, when the folder is deleted (a restored folder is
+no longer shared), moved out of the home or replaced by another, or when either
 user is deleted. It lets its user do only what the owner may do and share
 there, and rules for the same paths come first, as for homes. What they
 add counts against the owner's quota; what they delete goes to the trash,
 where both see it. Scripts:
 
 ```sh
-curl -H "Authorization: Bearer $TOKEN" -d action=grant -d path=/home/bob/photos -d user=alice -d access=edit https://host/.shares/
-# {"id":1,"path":"/home/bob/photos","user":"alice","access":"edit"}
+curl -H "Authorization: Bearer $TOKEN" -d action=grant -d path=/home/bob/photos -d user=alice -d access=edit -d expires=7d https://host/.shares/
+# {"id":1,"path":"/home/bob/photos","user":"alice","access":"edit","expires_at":"..."}
 curl -H "Authorization: Bearer $TOKEN" -d action=ungrant -d id=1 https://host/.shares/
 ```
 
-`access` is `read` (the default) or `edit`. Sharing needs the `share`
+`access` is `read` (the default) or `edit`; `expires` is `1d`, `7d`, `30d`
+or `90d`, or left out for no end date (`expires_at` is then `null`). Sharing needs the `share`
 action on the folder, and `write` for edit, which everyone has in their
 home unless a rule takes it away.
 

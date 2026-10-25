@@ -109,14 +109,15 @@ type Store interface {
 	// once a minute.
 	AppPasswordUser(ctx context.Context, username string, tokenHash []byte) (*User, error)
 
-	// ShareFolder stores fs, or changes how the folder of fs is shared with
-	// its user if it is already, and sets ID and CreatedAt; ErrTooMany if
-	// the owner has MaxFolderShares.
+	// ShareFolder stores fs, or changes how and until when the folder of fs
+	// is shared with its user if it is already, and sets ID and CreatedAt;
+	// ErrTooMany if the owner has MaxFolderShares that have not expired.
 	ShareFolder(ctx context.Context, fs *FolderShare) error
-	// FolderShares lists the folder shares of ownerID, of everyone for 0,
-	// newest first.
+	// FolderShares lists the unexpired folder shares of ownerID, of
+	// everyone for 0, newest first.
 	FolderShares(ctx context.Context, ownerID int64) ([]FolderShare, error)
-	// SharedWith lists the folders shared with userID.
+	// SharedWith lists the folders shared with userID that have not
+	// expired.
 	SharedWith(ctx context.Context, userID int64) ([]FolderShare, error)
 	// DeleteFolderShare deletes the folder share id, if userID (unless 0)
 	// is its owner or its user, and returns it, without the usernames
@@ -185,6 +186,8 @@ type Store interface {
 	// DeleteShare deletes the link id if userID created it, or whoever did
 	// if userID is 0.
 	DeleteShare(ctx context.Context, id, userID int64) error
+	// DeleteExpiredShares deletes the links and folder shares that
+	// expired.
 	DeleteExpiredShares(ctx context.Context) error
 
 	// CreateUpload stores up, which expires after keep, and sets its ID,
