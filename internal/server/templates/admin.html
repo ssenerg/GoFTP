@@ -47,7 +47,7 @@
       <tbody>
         {{range .Users}}
         <tr>
-          <td class="name"><span class="who-cell"><span class="avatar" aria-hidden="true">{{initial .Name}}</span><span>{{.Name}}</span>{{if .Self}}<span class="chip">you</span>{{end}}{{if .MustChange}}<span class="chip warn">must choose a password</span>{{end}}</span></td>
+          <td class="name"><span class="who-cell"><span class="avatar" aria-hidden="true">{{initial .Name}}</span><span>{{.Name}}</span>{{if .Self}}<span class="chip">you</span>{{end}}{{if .MustChange}}<span class="chip warn">must choose a password</span>{{end}}{{if .TwoFactor}}<span class="chip" title="Signs in with a code from an app too"><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg>two-factor</span>{{end}}</span></td>
           <td>
             {{if .Self}}{{.Role}}{{else}}
             <form method="post" action="/.admin/users" class="role-form">
@@ -75,6 +75,16 @@
                 <div class="popover-actions"><button type="submit" class="btn primary small">New password</button></div>
               </form>
             </details>
+            {{if .TwoFactor}}
+            <details class="confirm">
+              <summary class="icon-btn" aria-label="Turn off two-factor sign-in for {{.Name}}" title="Turn off two-factor sign-in"><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg></summary>
+              <form method="post" action="/.admin/users" class="popover">
+                <input type="hidden" name="action" value="two-factor-off"><input type="hidden" name="user" value="{{.Name}}">
+                <p>Turn off two-factor sign-in for <strong>{{.Name}}</strong>? Their password alone will sign them in: do it only for someone who lost their app and recovery codes, and is who they say.</p>
+                <div class="popover-actions"><button type="submit" class="btn danger small">Turn off</button></div>
+              </form>
+            </details>
+            {{end}}
             <details class="confirm">
               <summary class="icon-btn" aria-label="Delete {{.Name}}" title="Delete"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg></summary>
               <form method="post" action="/.admin/users" class="popover">

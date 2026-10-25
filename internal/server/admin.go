@@ -38,6 +38,7 @@ type adminPage struct {
 type adminUser struct {
 	Name, Role       string
 	MustChange, Self bool
+	TwoFactor        bool
 	Added, AddedISO  string
 	Quota            string // how much their home may hold, as set: "" for the default, "none" for no limit
 }
@@ -66,6 +67,7 @@ var adminNotices = map[string]string{
 	"deleted":      "The user was deleted.",
 	"deleted-home": "The user was deleted. Their home went to the trash, where a superadmin can restore it for them.",
 	"deleted-all":  "The user was deleted, and their home with everything in it, as the trash is off.",
+	"two-factor":   "Two-factor sign-in is off for them: their password alone signs them in, until they turn it on again.",
 	"rule-added":   "The rule was added.",
 	"rule-removed": "The rule was removed.",
 }
@@ -105,7 +107,8 @@ func (s *Server) rulesPage(c fiber.Ctx) error {
 }
 
 // usersAction adds users, gives them new temporary passwords, changes their
-// roles and deletes them. Superadmins cannot change their own account here,
+// roles, turns two-factor sign-in off for those who lost their app, and
+// deletes them. Superadmins cannot change their own account here,
 // so they cannot lock themselves out.
 func (s *Server) usersAction(c fiber.Ctx) error {
 	if ok, err := s.superadmin(c); !ok {
@@ -150,6 +153,12 @@ func (s *Server) usersAction(c fiber.Ctx) error {
 		s.recount(name)
 		s.logAdmin(c, "home quota set", zap.String("target", name), zap.String("quota", form["quota"]))
 		return s.redirect(c, usersPath+"?done=quota")
+	case "two-factor-off":
+		if _, err := s.auth.ResetTwoFactor(ctx, name); err != nil {
+			return s.adminFailure(c, "users", err)
+		}
+		s.logAdmin(c, "two-factor sign-in turned off", zap.String("target", name))
+		return s.redirect(c, usersPath+"?done=two-factor")
 	case "role":
 		if err := s.auth.SetRole(ctx, name, role); err != nil {
 			return s.adminFailure(c, "users", err)
@@ -265,7 +274,7 @@ func (s *Server) renderAdmin(c fiber.Ctx, status int, tab, notice, failure strin
 	me := userOf(c).Username
 	for _, u := range users {
 		data.Users = append(data.Users, adminUser{
-			Name: u.Username, Role: u.Role, MustChange: u.MustChangePassword, Self: u.Username == me,
+			Name: u.Username, Role: u.Role, MustChange: u.MustChangePassword, Self: u.Username == me, TwoFactor: u.TwoFactor,
 			Added: u.CreatedAt.UTC().Format("Jan 2, 2006"), AddedISO: isoTime(u.CreatedAt),
 		})
 		if q := u.HomeQuota; q != nil {

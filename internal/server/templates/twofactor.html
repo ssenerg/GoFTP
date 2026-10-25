@@ -1,0 +1,89 @@
+{{define "twofactor"}}{{template "head" .}}
+<body>
+{{template "topbar" .}}
+<main class="container narrow">
+  <div class="head">
+    <div>
+      <h1>Two-factor sign-in</h1>
+      <p class="summary">{{if .On}}On: after your password, signing in takes a code from your authenticator app, or a recovery code.{{else}}Off: your password alone signs you in.{{end}}</p>
+    </div>
+  </div>
+
+  {{with .Notice}}<div class="alert success banner" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg><span>{{.}}</span></div>{{end}}
+  {{with .Error}}<div class="alert error banner" role="alert"><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>{{.}}</span></div>{{end}}
+  {{if and .Recovered .On}}<div class="alert error banner" role="status"><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>You signed in with a recovery code: {{.CodesLeft}} {{if eq .CodesLeft 1}}is{{else}}are{{end}} left. If you lost your app, turn this off and set it up again, or make new codes.</span></div>{{end}}
+  {{with .Codes}}
+  <div class="alert success banner onetime" role="status">
+    <svg class="i" aria-hidden="true"><use href="#i-check"/></svg>
+    <div>
+      <p>Your recovery codes. Each works once, instead of a code from your app, should you lose it:</p>
+      <ul class="recovery-codes" id="recovery-codes">{{range .}}
+<li><code>{{.}}</code></li>{{end}}
+</ul>
+      <p><button type="button" class="btn small" data-copy="recovery-codes" hidden><svg class="i" aria-hidden="true"><use href="#i-copy"/></svg>Copy</button></p>
+      <p class="onetime-note">Keep them somewhere safe now: they are shown only here, once.</p>
+    </div>
+  </div>
+  {{end}}
+
+  {{if .On}}
+  <section class="card admin-form">
+    <h2>Recovery codes</h2>
+    <p>{{.CodesLeft}} of 10 left. New ones replace them all.</p>
+    <form method="post" action="/.auth/two-factor" class="inline-form">
+      <input type="hidden" name="action" value="codes">
+      <input type="hidden" name="username" value="{{.User}}" autocomplete="username">
+      <label class="field"><span>Your password</span>
+        <span class="pw"><input type="password" name="password" autocomplete="current-password" required></span>
+      </label>
+      <button type="submit" class="btn">New recovery codes</button>
+    </form>
+  </section>
+  <section class="card admin-form">
+    <h2>Turn off</h2>
+    <p>Your password alone will sign you in again.</p>
+    <form method="post" action="/.auth/two-factor" class="inline-form">
+      <input type="hidden" name="action" value="off">
+      <input type="hidden" name="username" value="{{.User}}" autocomplete="username">
+      <label class="field"><span>Your password</span>
+        <span class="pw"><input type="password" name="password" autocomplete="current-password" required></span>
+      </label>
+      <button type="submit" class="btn danger">Turn off</button>
+    </form>
+  </section>
+  {{else if .Setup}}{{with .Setup}}
+  <section class="card admin-form twofactor-setup">
+    <h2>Add this site to your authenticator app</h2>
+    <div class="qr-row">
+      {{.QR}}
+      <div class="qr-key">
+        <p>Scan the code with the app, or enter this key in it by hand:</p>
+        <p class="copyable"><code id="totp-secret">{{.Secret}}</code><button type="button" class="btn small" data-copy="totp-secret" hidden><svg class="i" aria-hidden="true"><use href="#i-copy"/></svg>Copy</button></p>
+        <p class="faint">On this phone? <a href="{{.URI}}">Open it in the app</a>.</p>
+      </div>
+    </div>
+    <form method="post" action="/.auth/two-factor" class="inline-form">
+      <input type="hidden" name="action" value="confirm">
+      <label class="field"><span>The code the app shows</span>
+        <input name="code" autocomplete="one-time-code" inputmode="numeric" maxlength="7" required autofocus>
+      </label>
+      <button type="submit" class="btn primary">Turn on</button>
+    </form>
+  </section>
+  {{end}}{{else}}
+  <section class="card admin-form">
+    <h2>Turn on</h2>
+    <p>Signing in will then take, after your password, a 6-digit code from an authenticator app on your phone, which changes every 30 seconds: a stolen password alone will not do. Sync apps keep signing in with their app passwords.</p>
+    <form method="post" action="/.auth/two-factor">
+      <input type="hidden" name="action" value="start">
+      <button type="submit" class="btn primary">Set up</button>
+    </form>
+  </section>
+  {{end}}
+</main>
+{{template "footer" .}}
+{{template "icons"}}
+{{script}}
+</body>
+</html>
+{{end}}

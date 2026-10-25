@@ -21,11 +21,11 @@ type PgStore struct{ db *pgxpool.Pool }
 
 func NewPgStore(db *pgxpool.Pool) *PgStore { return &PgStore{db: db} }
 
-const userColumns = "id, username, password_hash, must_change_password, created_at, home_quota"
+const userColumns = "id, username, password_hash, must_change_password, created_at, home_quota, totp_secret IS NOT NULL"
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.MustChangePassword, &u.CreatedAt, &u.HomeQuota)
+	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.MustChangePassword, &u.CreatedAt, &u.HomeQuota, &u.TwoFactor)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -141,8 +141,9 @@ func (s *PgStore) AppPasswordUser(ctx context.Context, username string, tokenHas
 		lastUsed *time.Time
 	)
 	err := s.db.QueryRow(ctx, `SELECT u.id, u.username, u.password_hash, u.must_change_password, u.created_at, u.home_quota,
-		a.last_used_at FROM app_passwords a JOIN users u ON u.id = a.user_id WHERE a.token_hash = $1 AND u.username = $2`,
-		tokenHash, username).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.MustChangePassword, &u.CreatedAt, &u.HomeQuota, &lastUsed)
+		u.totp_secret IS NOT NULL, a.last_used_at FROM app_passwords a JOIN users u ON u.id = a.user_id
+		WHERE a.token_hash = $1 AND u.username = $2`,
+		tokenHash, username).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.MustChangePassword, &u.CreatedAt, &u.HomeQuota, &u.TwoFactor, &lastUsed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -231,6 +232,91 @@ func (s *PgStore) MoveFolderShare(ctx context.Context, id int64, p string) error
 	})
 }
 
+func (s *PgStore) TwoFactor(ctx context.Context, userID int64) (*TwoFactor, error) {
+	var tf TwoFactor
+	err := s.db.QueryRow(ctx, `SELECT totp_secret, totp_pending, totp_step,
+		(SELECT count(*) FROM recovery_codes WHERE user_id = users.id) FROM users WHERE id = $1`, userID).
+		Scan(&tf.Secret, &tf.Pending, &tf.Step, &tf.RecoveryCodes)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &tf, nil
+}
+
+func (s *PgStore) SetTwoFactorPending(ctx context.Context, userID int64, secret []byte) error {
+	tag, err := s.db.Exec(ctx, "UPDATE users SET totp_pending = $2 WHERE id = $1", userID, secret)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = ErrNotFound
+	}
+	return err
+}
+
+func (s *PgStore) EnableTwoFactor(ctx context.Context, userID int64, secret []byte, step int64, hashes [][]byte) error {
+	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE users SET totp_secret = totp_pending, totp_pending = NULL, totp_step = $3
+			WHERE id = $1 AND totp_pending = $2 AND totp_secret IS NULL`, userID, secret, step)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		if _, err := tx.Exec(ctx, "DELETE FROM sessions WHERE user_id = $1", userID); err != nil {
+			return err
+		}
+		return setRecoveryCodes(ctx, tx, userID, hashes)
+	})
+}
+
+func (s *PgStore) DisableTwoFactor(ctx context.Context, userID int64) error {
+	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, "UPDATE users SET totp_secret = NULL, totp_pending = NULL, totp_step = 0 WHERE id = $1", userID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		_, err = tx.Exec(ctx, "DELETE FROM recovery_codes WHERE user_id = $1", userID)
+		return err
+	})
+}
+
+func (s *PgStore) UseTwoFactorStep(ctx context.Context, userID, step int64) (bool, error) {
+	tag, err := s.db.Exec(ctx, "UPDATE users SET totp_step = $2 WHERE id = $1 AND totp_step < $2 AND totp_secret IS NOT NULL", userID, step)
+	return err == nil && tag.RowsAffected() == 1, err
+}
+
+func (s *PgStore) UseRecoveryCode(ctx context.Context, userID int64, hash []byte) (bool, error) {
+	tag, err := s.db.Exec(ctx, "DELETE FROM recovery_codes WHERE user_id = $1 AND code_hash = $2", userID, hash)
+	return err == nil && tag.RowsAffected() == 1, err
+}
+
+func (s *PgStore) SetRecoveryCodes(ctx context.Context, userID int64, hashes [][]byte) error {
+	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		var on bool
+		err := tx.QueryRow(ctx, "SELECT totp_secret IS NOT NULL FROM users WHERE id = $1 FOR UPDATE", userID).Scan(&on)
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && !on {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		return setRecoveryCodes(ctx, tx, userID, hashes)
+	})
+}
+
+func setRecoveryCodes(ctx context.Context, tx pgx.Tx, userID int64, hashes [][]byte) error {
+	if _, err := tx.Exec(ctx, "DELETE FROM recovery_codes WHERE user_id = $1", userID); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, "INSERT INTO recovery_codes (user_id, code_hash) SELECT $1, unnest($2::bytea[])", userID, hashes)
+	return err
+}
+
 func (s *PgStore) SetHomeQuota(ctx context.Context, userID int64, quota *int64) error {
 	tag, err := s.db.Exec(ctx, "UPDATE users SET home_quota = $2 WHERE id = $1", userID, quota)
 	if err == nil && tag.RowsAffected() == 0 {
@@ -272,8 +358,8 @@ func (s *PgStore) CreateSession(ctx context.Context, tokenHash []byte, u *User, 
 }
 
 func (s *PgStore) SessionUser(ctx context.Context, tokenHash []byte) (*User, error) {
-	return scanUser(s.db.QueryRow(ctx, `SELECT u.id, u.username, u.password_hash, u.must_change_password, u.created_at, u.home_quota
-		FROM sessions s JOIN users u ON u.id = s.user_id
+	return scanUser(s.db.QueryRow(ctx, `SELECT u.id, u.username, u.password_hash, u.must_change_password, u.created_at, u.home_quota,
+		u.totp_secret IS NOT NULL FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = $1 AND s.expires_at > now()`, tokenHash))
 }
 

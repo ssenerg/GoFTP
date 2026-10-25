@@ -74,6 +74,7 @@ access to the database:
 goftp user add bob --role operator   # prints a temporary password
 goftp user list
 goftp user passwd bob                # new temporary password, ends bob's sessions
+goftp user two-factor-off bob        # for when he lost his app and recovery codes
 goftp user role bob admin
 goftp user quota bob 10GiB           # how much his home may hold; none, or default
 goftp user delete bob                # their home goes to the trash
@@ -82,6 +83,23 @@ goftp user delete bob                # their home goes to the trash
 New and reset passwords are temporary: after signing in, users can do
 nothing but choose their own password (at least 12 characters), which ends
 all their other sessions.
+
+### Two-factor sign-in
+
+Users can have signing in take a code from an authenticator app after
+their password, under **Two-factor sign-in** in their account menu: they
+scan a QR code (or type its key) into the app, and give the code it shows
+to turn it on. That signs them out everywhere else, and shows 10 recovery
+codes once, each of which works once instead of a code, for a lost phone;
+new ones replace them, given the password. Codes are TOTP (RFC 6238: 6
+digits, 30 seconds, SHA-1, as apps expect), accepted 30 seconds early or
+late, and none works twice. Turning it off takes the password too. Wrong
+codes count against the client's sign-in budget, and a sign-in waits for
+its code 5 minutes, 5 tries at most. For someone who lost both, a superadmin
+turns it off under **Users** (marked *two-factor*), or with
+`goftp user two-factor-off NAME`. App passwords still sign apps in over
+WebDAV without a code: they are made by a user already signed in, for one
+app each, and are revoked alone.
 
 | Role         | May                                                                                     |
 |--------------|-----------------------------------------------------------------------------------------|
@@ -227,6 +245,15 @@ curl -s -H 'Content-Type: application/json' \
 # {"token":"...","expires_at":"...","must_change_password":false}
 curl -C - -O -H "Authorization: Bearer $TOKEN" https://host/dir/file.iso
 ```
+
+With two-factor sign-in, add `"code"` (from the app, or a recovery code).
+Without it, the answer is `401` with
+`{"two_factor":true,"challenge":"..."}`; send
+`{"challenge":"...","code":"..."}` within 5 minutes instead of the
+password. Scripts turn it on with `action=start` (which answers with the
+`secret` and `otpauth://` `uri` for the app) and then `action=confirm`
+with `code` (answering with the `recovery_codes` and a new `token`), and
+off with `action=off` and `password`, all on `POST /.auth/two-factor`.
 
 A temporary password is changed with `POST /.auth/password`
 (`{"current_password":"...","new_password":"..."}`), which returns a new
@@ -497,7 +524,9 @@ Wrong app passwords count against the client's sign-in budget
   sends `X-Forwarded-Proto`) the session cookie is `Secure` and `__Host-`
   prefixed, and HSTS is sent.
 - Passwords are hashed with Argon2id; only SHA-256 hashes of session tokens
-  are stored.
+  and recovery codes are stored. Two-factor secrets are stored as they
+  are, as codes are made from them: whoever reads the database can make
+  codes, but still needs the password.
 - Failed sign-ins (and wrong current passwords) are rate limited per client
   (`limiter.*`), and each user can sign in at most 30 times a minute.
   Behind a reverse proxy, set `server.proxy_header` (`X-Forwarded-For`)

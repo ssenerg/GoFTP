@@ -434,6 +434,12 @@
   .people-form { display: flex; flex-direction: column; gap: 12px; }
   .people-row { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 10px; }
   .people-row select { height: 38px; width: 100%; }
+  .twofactor-setup .qr-row { display: flex; flex-wrap: wrap; align-items: center; gap: 20px; }
+  .qr { display: block; width: 184px; height: 184px; border-radius: var(--radius-sm); }
+  .qr-key { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1 1 220px; font-size: 13.5px; }
+  .qr-key code { overflow-wrap: anywhere; font-size: 14px; letter-spacing: 0.06em; }
+  .recovery-codes { display: grid; grid-template-columns: repeat(2, max-content); gap: 4px 24px; margin: 0; padding: 0; list-style: none; }
+  .recovery-codes code { font-size: 15px; letter-spacing: 0.04em; }
   .shares-section { margin-top: 28px; }
   .shares-section:first-of-type { margin-top: 0; }
   .shares-section > h2 { margin-bottom: 10px; font-size: 16px; }
@@ -495,6 +501,8 @@
   .list-table td.act { width: auto; white-space: nowrap; }
   .who-cell { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-weight: 500; }
   .who-cell .avatar { width: 28px; height: 28px; font-size: 12.5px; }
+  .who-cell .chip { display: inline-flex; align-items: center; gap: 4px; }
+  .who-cell .chip .i { width: 13px; height: 13px; }
   .chip.warn { background: var(--danger-soft); border-color: transparent; color: var(--danger); }
   .role-form { display: flex; align-items: center; gap: 8px; }
   .role-form select { height: 32px; font-size: 13.5px; }
@@ -735,6 +743,7 @@
       {{if .Admin}}<a href="/.admin/users"><svg class="i" aria-hidden="true"><use href="#i-users"/></svg>Users and rules</a>{{end}}
       <a href="/.sync/"><svg class="i" aria-hidden="true"><use href="#i-sync"/></svg>Sync</a>
       <a href="/.auth/password"><svg class="i" aria-hidden="true"><use href="#i-key"/></svg>Change password</a>
+      <a href="/.auth/two-factor"><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg>Two-factor sign-in</a>
       <form method="post" action="/.auth/logout"><button type="submit"><svg class="i" aria-hidden="true"><use href="#i-logout"/></svg>Sign out</button></form>
     </div>
   </details>

@@ -242,6 +242,27 @@ func userCmd() *cobra.Command {
 		},
 	}
 
+	twoFactorOff := &cobra.Command{
+		Use:   "two-factor-off NAME",
+		Short: "Turn off two-factor sign-in for a user who lost their app and recovery codes",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return withService(cmd, func(svc *auth.Service) error {
+				on, err := svc.ResetTwoFactor(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+				name := auth.NormalizeUsername(args[0])
+				if !on {
+					cmd.Printf("two-factor sign-in was off for %s already\n", name)
+					return nil
+				}
+				cmd.Printf("turned off two-factor sign-in for %s: their password alone signs them in\n", name)
+				return nil
+			})
+		},
+	}
+
 	role := &cobra.Command{
 		Use:   "role NAME ROLE",
 		Short: "Change a user's role (" + roles + ")",
@@ -310,7 +331,7 @@ func userCmd() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(add, list, passwd, role, quota, del)
+	cmd.AddCommand(add, list, passwd, twoFactorOff, role, quota, del)
 	return cmd
 }
 
